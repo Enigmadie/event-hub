@@ -23,4 +23,10 @@ impl MqttRuntime {
 
         Self { client, connection }
     }
+
+    pub fn publish(&mut self, topic: &str, payload: &[u8]) {
+        self.client
+            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)
+            .expect("Failed to publish MQTT message");
+    }
 }

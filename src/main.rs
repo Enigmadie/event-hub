@@ -1,4 +1,10 @@
-use event_hub::transport::mqqt::client::{MqttConfig, MqttRuntime};
+use event_hub::{
+    integrations::zigbee2mqtt::{
+        events::{Z2mEvent, parse},
+        subscriptions::subscriptions,
+    },
+    transport::mqtt::client::{MqttConfig, MqttRuntime},
+};
 use rumqttc::{Event, Packet, QoS};
 
 fn main() {
@@ -10,24 +16,30 @@ fn main() {
         port: 1883,
     });
 
-    mqtt.client
-        .subscribe("zigbee2mqtt/+/state", QoS::AtLeastOnce);
-
-    mqtt.client
-        .subscribe("zigbee2mqtt/+/availability", QoS::AtLeastOnce);
-
-    mqtt.client
-        .subscribe("zigbee2mqtt/+/power", QoS::AtLeastOnce);
+    for topic in subscriptions() {
+        println!("Subscribing: {}", topic);
+        mqtt.client
+            .subscribe(topic, QoS::AtLeastOnce)
+            .expect("subscribe failed");
+    }
 
     println!("Home is listening...");
 
     for event in mqtt.connection.iter() {
         match event {
             Ok(Event::Incoming(Packet::Publish(p))) => {
-                let topic = p.topic;
-                let payload = String::from_utf8_lossy(&p.payload);
-
-                println!("{} → {}", topic, payload);
+                println!("RAW {} ({} bytes)", p.topic, p.payload.len());
+                if let Some((topic, event)) = parse(p) {
+                    match event {
+                        Z2mEvent::DeviceState { device, on, raw } => {
+                            println!("RAW JSON: {}", raw);
+                            println!("Device {device} state: {on}");
+                        }
+                        Z2mEvent::Availability { device, online } => {
+                            println!("Device {device} is {online}");
+                        }
+                    }
+                }
             }
             Ok(_) => {}
             Err(e) => {
