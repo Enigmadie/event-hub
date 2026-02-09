@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rumqttc::{Client, MqttOptions};
+use rumqttc::{Client, MqttOptions, QoS};
 
 pub struct MqttConfig {
     pub client_id: String,
@@ -24,9 +24,13 @@ impl MqttRuntime {
         Self { client, connection }
     }
 
-    pub fn publish(&mut self, topic: &str, payload: &[u8]) {
+    pub fn publish(&mut self, topic: &str, payload: Vec<u8>) {
         self.client
-            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)
-            .expect("Failed to publish MQTT message");
+            .publish(topic, QoS::AtLeastOnce, false, payload)
+            .unwrap();
+    }
+
+    pub fn subscribe(&mut self, topic: &str) {
+        self.client.subscribe(topic, QoS::AtLeastOnce).unwrap();
     }
 }

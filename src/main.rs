@@ -1,5 +1,6 @@
 use event_hub::{
     integrations::zigbee2mqtt::{
+        client::Z2mClient,
         events::{Z2mEvent, parse},
         subscriptions::subscriptions,
     },
@@ -24,6 +25,8 @@ fn main() {
     }
 
     println!("Home is listening...");
+    let mut z2m = Z2mClient::new(&mut mqtt);
+    z2m.turn_off("test_device");
 
     for event in mqtt.connection.iter() {
         match event {
