@@ -24,9 +24,9 @@ fn main() {
             .expect("subscribe failed");
     }
 
-    println!("Home is listening...");
     let mut z2m = Z2mClient::new(&mut mqtt);
-    z2m.turn_off("test_device");
+    z2m.turn_off("plug_plant");
+    z2m.turn_on("plug_plant");
 
     for event in mqtt.connection.iter() {
         match event {
