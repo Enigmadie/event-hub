@@ -24,13 +24,14 @@ impl MqttRuntime {
         Self { client, connection }
     }
 
-    pub fn publish(&mut self, topic: &str, payload: Vec<u8>) {
+    pub fn publish(&self, topic: &str, payload: Vec<u8>) -> anyhow::Result<()> {
         self.client
-            .publish(topic, QoS::AtLeastOnce, false, payload)
-            .unwrap();
+            .publish(topic, QoS::AtLeastOnce, false, payload)?;
+        Ok(())
     }
 
-    pub fn subscribe(&mut self, topic: &str) {
-        self.client.subscribe(topic, QoS::AtLeastOnce).unwrap();
+    pub fn subscribe(&self, topic: &str) -> anyhow::Result<()> {
+        self.client.subscribe(topic, QoS::AtLeastOnce)?;
+        Ok(())
     }
 }

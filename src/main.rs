@@ -1,54 +1,69 @@
-use event_hub::{
-    integrations::zigbee2mqtt::{
-        client::Z2mClient,
-        events::{Z2mEvent, parse},
-        subscriptions::subscriptions,
-    },
-    transport::mqtt::client::{MqttConfig, MqttRuntime},
-};
-use rumqttc::{Event, Packet, QoS};
+use std::{net::SocketAddr, sync::Arc};
 
-fn main() {
+use event_hub::{
+    application::app_service::AppService,
+    infrastructure::{
+        integrations::zigbee2mqtt::{
+            client::Z2mClient, events::parse, subscriptions::subscriptions,
+        },
+        repositories::memory_device_repository::MemoryDeviceRepository,
+        transport::mqtt::client::{MqttConfig, MqttRuntime},
+    },
+    presentation::http::{routes::create_router, state::AppState},
+};
+use rumqttc::{Event, Packet};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
     env_logger::init();
 
-    let mut mqtt = MqttRuntime::connect(MqttConfig {
-        client_id: "home".to_string(),
-        host: "192.168.0.219".to_string(),
-        port: 1883,
+    let mqtt = MqttRuntime::connect(MqttConfig {
+        client_id: env("MQTT_CLIENT_ID", "event-hub"),
+        host: env("MQTT_HOST", "127.0.0.1"),
+        port: env("MQTT_PORT", "1883").parse()?,
     });
 
     for topic in subscriptions() {
-        println!("Subscribing: {}", topic);
-        mqtt.client
-            .subscribe(topic, QoS::AtLeastOnce)
-            .expect("subscribe failed");
+        log::info!("subscribing to {topic}");
+        mqtt.subscribe(&topic)?;
     }
 
-    let mut z2m = Z2mClient::new(&mut mqtt);
-    z2m.turn_off("plug_plant");
-    z2m.turn_on("plug_plant");
+    let repository = Arc::new(MemoryDeviceRepository::with_demo_devices());
+    let commands = Arc::new(Z2mClient::new(mqtt.client.clone()));
+    let app_service = Arc::new(AppService::new(repository, commands));
+    let app = create_router(AppState {
+        app_service: app_service.clone(),
+    });
 
-    for event in mqtt.connection.iter() {
-        match event {
-            Ok(Event::Incoming(Packet::Publish(p))) => {
-                println!("RAW {} ({} bytes)", p.topic, p.payload.len());
-                if let Some((topic, event)) = parse(p) {
-                    match event {
-                        Z2mEvent::DeviceState { device, on, raw } => {
-                            println!("RAW JSON: {}", raw);
-                            println!("Device {device} state: {on}");
-                        }
-                        Z2mEvent::Availability { device, online } => {
-                            println!("Device {device} is {online}");
-                        }
+    let mut connection = mqtt.connection;
+    tokio::task::spawn_blocking(move || {
+        for event in connection.iter() {
+            match event {
+                Ok(Event::Incoming(Packet::Publish(p))) => {
+                    if let Some((topic, event)) = parse(p) {
+                        log::info!("device event from {topic}: {event:?}");
+                        app_service.handle_device_event(event.into_device_event());
                     }
                 }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("MQTT error: {:?}", e);
-                break;
+                Ok(_) => {}
+                Err(error) => {
+                    log::error!("MQTT connection error: {error:?}");
+                    break;
+                }
             }
         }
-    }
+    });
+
+    let addr: SocketAddr = env("HTTP_ADDR", "127.0.0.1:3000").parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    log::info!("HTTP server listening on http://{addr}");
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn env(name: &str, fallback: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| fallback.to_string())
 }
