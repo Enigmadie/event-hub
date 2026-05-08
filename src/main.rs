@@ -1,13 +1,17 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use event_hub::{
     application::app_service::AppService,
     infrastructure::{
+        db::postgres::{PostgresConfig, connect as connect_postgres},
         integrations::zigbee2mqtt::{
             client::Z2mClient, events::parse, subscriptions::subscriptions,
         },
-        repositories::memory_device_repository::MemoryDeviceRepository,
+        repositories::device_event_repository::PostgresDeviceEventRepository,
+        repositories::device_repository::PostgresDeviceRepository,
+        repositories::scheduled_command_repository::PostgresScheduledCommandRepository,
         transport::mqtt::client::{MqttConfig, MqttRuntime},
+        workers::{availability_watchdog, scheduled_commands},
     },
     presentation::http::{routes::create_router, state::AppState},
 };
@@ -17,6 +21,25 @@ use rumqttc::{Event, Packet};
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     env_logger::init();
+    let app_time_zone = env("APP_TIME_ZONE", "Europe/Moscow");
+
+    let postgres = connect_postgres(&PostgresConfig {
+        host: env("DB_HOST", "127.0.0.1"),
+        port: env("DB_PORT", "5432").parse()?,
+        username: env("DB_USERNAME", "postgres"),
+        password: env("DB_PASS", "postgres"),
+        database: env("DB_NAME", "event_hub"),
+    })
+    .await?;
+    let repository = Arc::new(PostgresDeviceRepository::new(postgres.clone()));
+    let event_repository = Arc::new(PostgresDeviceEventRepository::new(
+        postgres.clone(),
+        app_time_zone.clone(),
+    ));
+    let scheduled_command_repository = Arc::new(PostgresScheduledCommandRepository::new(
+        postgres,
+        app_time_zone.clone(),
+    ));
 
     let mqtt = MqttRuntime::connect(MqttConfig {
         client_id: env("MQTT_CLIENT_ID", "event-hub"),
@@ -28,22 +51,47 @@ async fn main() -> anyhow::Result<()> {
         log::info!("subscribing to {topic}");
         mqtt.subscribe(&topic)?;
     }
-
-    let repository = Arc::new(MemoryDeviceRepository::with_demo_devices());
     let commands = Arc::new(Z2mClient::new(mqtt.client.clone()));
-    let app_service = Arc::new(AppService::new(repository, commands));
+    let app_service = Arc::new(AppService::new(
+        repository,
+        event_repository,
+        scheduled_command_repository,
+        commands,
+    ));
     let app = create_router(AppState {
         app_service: app_service.clone(),
     });
 
+    availability_watchdog::spawn(
+        app_service.clone(),
+        Duration::from_secs(env("DEVICE_STALE_AFTER_SECS", "300").parse()?),
+        Duration::from_secs(env("DEVICE_WATCHDOG_INTERVAL_SECS", "60").parse()?),
+    );
+    scheduled_commands::spawn(
+        app_service.clone(),
+        Duration::from_secs(env("SCHEDULED_COMMAND_INTERVAL_SECS", "5").parse()?),
+        env("SCHEDULED_COMMAND_BATCH_SIZE", "25").parse()?,
+    );
+
     let mut connection = mqtt.connection;
+    let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         for event in connection.iter() {
             match event {
                 Ok(Event::Incoming(Packet::Publish(p))) => {
-                    if let Some((topic, event)) = parse(p) {
+                    for (topic, event) in parse(p) {
                         log::info!("device event from {topic}: {event:?}");
-                        app_service.handle_device_event(event.into_device_event());
+                        let app_service = app_service.clone();
+                        runtime.spawn(async move {
+                            if let Err(error) = app_service
+                                .handle_incoming_device_event(
+                                    event.into_incoming_device_event(topic),
+                                )
+                                .await
+                            {
+                                log::error!("failed to handle device event: {error:#}");
+                            }
+                        });
                     }
                 }
                 Ok(_) => {}

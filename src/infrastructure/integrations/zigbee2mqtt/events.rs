@@ -2,12 +2,17 @@ use rumqttc::Publish;
 use serde_json::Value;
 
 use crate::{
-    application::device_event::DeviceEvent,
+    application::device_event::{DeviceEvent, IncomingDeviceEvent},
     domain::{DeviceAvailability, DeviceId, DeviceState},
 };
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Z2mEvent {
+    DeviceDiscovered {
+        device: String,
+        name: String,
+        raw: Value,
+    },
     DeviceState {
         device: String,
         state: DeviceState,
@@ -22,6 +27,10 @@ pub enum Z2mEvent {
 impl Z2mEvent {
     pub fn into_device_event(self) -> DeviceEvent {
         match self {
+            Self::DeviceDiscovered { device, name, .. } => DeviceEvent::DeviceDiscovered {
+                device_id: DeviceId::new(device),
+                name,
+            },
             Self::DeviceState { device, state, .. } => DeviceEvent::StateChanged {
                 device_id: DeviceId::new(device),
                 state,
@@ -36,55 +45,118 @@ impl Z2mEvent {
             },
         }
     }
+
+    pub fn into_incoming_device_event(self, source_topic: String) -> IncomingDeviceEvent {
+        let payload = self.payload();
+        IncomingDeviceEvent::new(self.into_device_event(), source_topic, payload)
+    }
+
+    fn payload(&self) -> Value {
+        match self {
+            Self::DeviceDiscovered { raw, .. } => raw.clone(),
+            Self::DeviceState { raw, .. } => raw.clone(),
+            Self::Availability { online, .. } => {
+                Value::String(if *online { "online" } else { "offline" }.to_string())
+            }
+        }
+    }
 }
 
-pub fn parse(p: Publish) -> Option<(String, Z2mEvent)> {
+pub fn parse(p: Publish) -> Vec<(String, Z2mEvent)> {
     let topic = p.topic;
-    let mut parts = topic.split('/');
+    let parts: Vec<String> = topic.split('/').map(str::to_string).collect();
 
-    let prefix = parts.next()?;
-    let device = parts.next()?.to_string();
-    let sub = parts.next();
+    let Some(prefix) = parts.first() else {
+        return Vec::new();
+    };
+    let Some(device) = parts.get(1).cloned() else {
+        return Vec::new();
+    };
+    let sub = parts.get(2).map(String::as_str);
 
     if prefix != "zigbee2mqtt" {
-        return None;
+        return Vec::new();
     }
 
     if device == "bridge" {
-        // service messages
-        return None;
+        return parse_bridge_message(topic, sub, &p.payload);
     }
 
     match sub {
-        None => {
-            let json: Value = serde_json::from_slice(&p.payload).ok()?;
-            let state = match json.get("state").and_then(|v| v.as_str())? {
-                "ON" => DeviceState::On,
-                "OFF" => DeviceState::Off,
-                _ => return None,
-            };
+        None => parse_device_state(topic, device, &p.payload),
+        Some("availability") => parse_availability(topic, device, &p.payload),
+        _ => Vec::new(),
+    }
+}
+
+fn parse_device_state(topic: String, device: String, payload: &[u8]) -> Vec<(String, Z2mEvent)> {
+    let Some(json) = serde_json::from_slice::<Value>(payload).ok() else {
+        return Vec::new();
+    };
+    let state = match json.get("state").and_then(|value| value.as_str()) {
+        Some("ON") => DeviceState::On,
+        Some("OFF") => DeviceState::Off,
+        _ => return Vec::new(),
+    };
+
+    vec![(
+        topic,
+        Z2mEvent::DeviceState {
+            device,
+            state,
+            raw: json,
+        },
+    )]
+}
+
+fn parse_availability(topic: String, device: String, payload: &[u8]) -> Vec<(String, Z2mEvent)> {
+    let Some(value) = std::str::from_utf8(payload).ok().map(str::trim) else {
+        return Vec::new();
+    };
+
+    vec![(
+        topic,
+        Z2mEvent::Availability {
+            device,
+            online: value == "online",
+        },
+    )]
+}
+
+fn parse_bridge_message(
+    topic: String,
+    sub: Option<&str>,
+    payload: &[u8],
+) -> Vec<(String, Z2mEvent)> {
+    if sub != Some("devices") {
+        return Vec::new();
+    }
+
+    let Some(devices) = serde_json::from_slice::<Value>(payload)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+    else {
+        return Vec::new();
+    };
+
+    devices
+        .into_iter()
+        .filter_map(|raw| {
+            let friendly_name = raw.get("friendly_name")?.as_str()?;
+            if friendly_name == "Coordinator" {
+                return None;
+            }
 
             Some((
                 topic.clone(),
-                Z2mEvent::DeviceState {
-                    device: device.to_string(),
-                    state,
-                    raw: json,
+                Z2mEvent::DeviceDiscovered {
+                    device: friendly_name.to_string(),
+                    name: friendly_name.to_string(),
+                    raw,
                 },
             ))
-        }
-        Some("availability") => {
-            let s = std::str::from_utf8(&p.payload).ok()?.trim();
-            Some((
-                topic.clone(),
-                Z2mEvent::Availability {
-                    device: device.to_string(),
-                    online: s == "online",
-                },
-            ))
-        }
-        _ => None,
-    }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -103,15 +175,18 @@ mod tests {
             r#"{"state":"ON"}"#,
         );
 
-        let (_, event) = parse(publish).expect("expected device event");
+        let events = parse(publish);
 
         assert_eq!(
-            event,
-            Z2mEvent::DeviceState {
-                device: "plug_plant".to_string(),
-                state: DeviceState::On,
-                raw: json!({ "state": "ON" }),
-            }
+            events,
+            vec![(
+                "zigbee2mqtt/plug_plant".to_string(),
+                Z2mEvent::DeviceState {
+                    device: "plug_plant".to_string(),
+                    state: DeviceState::On,
+                    raw: json!({ "state": "ON" }),
+                }
+            )]
         );
     }
 
@@ -123,21 +198,53 @@ mod tests {
             "online",
         );
 
-        let (_, event) = parse(publish).expect("expected availability event");
+        let events = parse(publish);
 
         assert_eq!(
-            event,
-            Z2mEvent::Availability {
-                device: "plug_plant".to_string(),
-                online: true,
-            }
+            events,
+            vec![(
+                "zigbee2mqtt/plug_plant/availability".to_string(),
+                Z2mEvent::Availability {
+                    device: "plug_plant".to_string(),
+                    online: true,
+                }
+            )]
         );
     }
 
     #[test]
-    fn ignores_bridge_messages() {
+    fn parses_bridge_devices() {
+        let publish = Publish::new(
+            "zigbee2mqtt/bridge/devices",
+            QoS::AtLeastOnce,
+            r#"[
+                {"friendly_name":"Coordinator","type":"Coordinator"},
+                {"friendly_name":"plug_plant","type":"Router"}
+            ]"#,
+        );
+
+        let events = parse(publish);
+
+        assert_eq!(
+            events,
+            vec![(
+                "zigbee2mqtt/bridge/devices".to_string(),
+                Z2mEvent::DeviceDiscovered {
+                    device: "plug_plant".to_string(),
+                    name: "plug_plant".to_string(),
+                    raw: json!({
+                        "friendly_name": "plug_plant",
+                        "type": "Router"
+                    }),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn ignores_other_bridge_messages() {
         let publish = Publish::new("zigbee2mqtt/bridge/state", QoS::AtLeastOnce, "online");
 
-        assert_eq!(parse(publish), None);
+        assert!(parse(publish).is_empty());
     }
 }
