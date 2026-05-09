@@ -1,0 +1,20 @@
+name: Deploy iot-hub
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Raspberry Pi
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secret.PI_HOST }}
+          username: ${{ secret.PI_USER }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          script: |
+            /home/godo/deploy/iot-hub.sh
