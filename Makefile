@@ -18,8 +18,10 @@ DEVICE_STALE_AFTER_SECS ?= 300
 DEVICE_WATCHDOG_INTERVAL_SECS ?= 60
 SCHEDULED_COMMAND_INTERVAL_SECS ?= 5
 SCHEDULED_COMMAND_BATCH_SIZE ?= 25
+RECURRING_SCHEDULE_INTERVAL_SECS ?= 5
+RECURRING_SCHEDULE_BATCH_SIZE ?= 25
 
-.PHONY: help fmt check test run dev health devices device-events schedules schedule cancel-schedule turn-on turn-off clean
+.PHONY: help fmt check test run dev health devices device-events schedules schedule cancel-schedule recurring-schedules recurring-schedule recurring-schedule-enable recurring-schedule-disable turn-on turn-off clean
 
 help:
 	@printf "Available targets:\n"
@@ -34,6 +36,10 @@ help:
 	@printf '  make schedules GET /devices/$${DEVICE}/schedules\n'
 	@printf '  make schedule  POST /devices/$${DEVICE}/schedules COMMAND=turn_on RUN_AT="2026-05-09 22:00:00"\n'
 	@printf '  make cancel-schedule DELETE /schedules/$${SCHEDULE_ID}\n'
+	@printf '  make recurring-schedules GET /devices/$${DEVICE}/recurring-schedules\n'
+	@printf '  make recurring-schedule POST /devices/$${DEVICE}/recurring-schedules START_TIME="10:00:00" END_TIME="00:00:00"\n'
+	@printf '  make recurring-schedule-enable PATCH /recurring-schedules/$${SCHEDULE_ID} enabled=true\n'
+	@printf '  make recurring-schedule-disable PATCH /recurring-schedules/$${SCHEDULE_ID} enabled=false\n'
 	@printf '  make turn-on   POST /devices/$${DEVICE}/turn-on\n'
 	@printf '  make turn-off  POST /devices/$${DEVICE}/turn-off\n'
 	@printf "  make clean     Remove build artifacts\n"
@@ -48,7 +54,7 @@ test:
 	cargo test
 
 run:
-	MQTT_HOST=$(MQTT_HOST) MQTT_PORT=$(MQTT_PORT) MQTT_CLIENT_ID=$(MQTT_CLIENT_ID) HTTP_ADDR=$(HTTP_ADDR) APP_TIME_ZONE=$(APP_TIME_ZONE) DB_HOST=$(DB_HOST) DB_PORT=$(DB_PORT) DB_USERNAME=$(DB_USERNAME) DB_PASS=$(DB_PASS) DB_NAME=$(DB_NAME) DEVICE_STALE_AFTER_SECS=$(DEVICE_STALE_AFTER_SECS) DEVICE_WATCHDOG_INTERVAL_SECS=$(DEVICE_WATCHDOG_INTERVAL_SECS) SCHEDULED_COMMAND_INTERVAL_SECS=$(SCHEDULED_COMMAND_INTERVAL_SECS) SCHEDULED_COMMAND_BATCH_SIZE=$(SCHEDULED_COMMAND_BATCH_SIZE) cargo run
+	MQTT_HOST=$(MQTT_HOST) MQTT_PORT=$(MQTT_PORT) MQTT_CLIENT_ID=$(MQTT_CLIENT_ID) HTTP_ADDR=$(HTTP_ADDR) APP_TIME_ZONE=$(APP_TIME_ZONE) DB_HOST=$(DB_HOST) DB_PORT=$(DB_PORT) DB_USERNAME=$(DB_USERNAME) DB_PASS=$(DB_PASS) DB_NAME=$(DB_NAME) DEVICE_STALE_AFTER_SECS=$(DEVICE_STALE_AFTER_SECS) DEVICE_WATCHDOG_INTERVAL_SECS=$(DEVICE_WATCHDOG_INTERVAL_SECS) SCHEDULED_COMMAND_INTERVAL_SECS=$(SCHEDULED_COMMAND_INTERVAL_SECS) SCHEDULED_COMMAND_BATCH_SIZE=$(SCHEDULED_COMMAND_BATCH_SIZE) RECURRING_SCHEDULE_INTERVAL_SECS=$(RECURRING_SCHEDULE_INTERVAL_SECS) RECURRING_SCHEDULE_BATCH_SIZE=$(RECURRING_SCHEDULE_BATCH_SIZE) cargo run
 
 dev: fmt check test
 
@@ -75,6 +81,24 @@ schedule:
 cancel-schedule:
 	@test -n "$(SCHEDULE_ID)" || (echo "SCHEDULE_ID is required, example: make cancel-schedule SCHEDULE_ID=1" && exit 1)
 	curl -sS -X DELETE http://$(HTTP_ADDR)/schedules/$(SCHEDULE_ID)
+
+recurring-schedules:
+	@test -n "$(DEVICE)" || (echo "DEVICE is required, example: make recurring-schedules DEVICE=plug_plant" && exit 1)
+	curl -sS "http://$(HTTP_ADDR)/devices/$(DEVICE)/recurring-schedules"
+
+recurring-schedule:
+	@test -n "$(DEVICE)" || (echo "DEVICE is required, example: make recurring-schedule DEVICE=plug_plant START_TIME='10:00:00' END_TIME='00:00:00'" && exit 1)
+	@test -n "$(START_TIME)" || (echo "START_TIME is required, example: START_TIME='10:00:00'" && exit 1)
+	@test -n "$(END_TIME)" || (echo "END_TIME is required, example: END_TIME='00:00:00'" && exit 1)
+	curl -sS -X POST http://$(HTTP_ADDR)/devices/$(DEVICE)/recurring-schedules -H 'content-type: application/json' -d '{"start_time":"$(START_TIME)","end_time":"$(END_TIME)"}'
+
+recurring-schedule-enable:
+	@test -n "$(SCHEDULE_ID)" || (echo "SCHEDULE_ID is required, example: make recurring-schedule-enable SCHEDULE_ID=1" && exit 1)
+	curl -sS -X PATCH http://$(HTTP_ADDR)/recurring-schedules/$(SCHEDULE_ID) -H 'content-type: application/json' -d '{"enabled":true}'
+
+recurring-schedule-disable:
+	@test -n "$(SCHEDULE_ID)" || (echo "SCHEDULE_ID is required, example: make recurring-schedule-disable SCHEDULE_ID=1" && exit 1)
+	curl -sS -X PATCH http://$(HTTP_ADDR)/recurring-schedules/$(SCHEDULE_ID) -H 'content-type: application/json' -d '{"enabled":false}'
 
 turn-on:
 	@test -n "$(DEVICE)" || (echo "DEVICE is required, example: make turn-on DEVICE=plug_plant" && exit 1)

@@ -10,6 +10,7 @@ use super::state::AppState;
 use crate::{
     application::{
         device_event::DeviceEventLogEntry,
+        recurring_schedule::RecurringSchedule,
         scheduled_command::{ScheduledCommand, ScheduledCommandJob, ScheduledCommandStatus},
     },
     domain::Device,
@@ -47,6 +48,17 @@ pub struct CreateScheduleRequest {
     run_at: String,
 }
 
+#[derive(Deserialize)]
+pub struct CreateRecurringScheduleRequest {
+    start_time: String,
+    end_time: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateRecurringScheduleRequest {
+    enabled: bool,
+}
+
 #[derive(Serialize)]
 pub struct ScheduledCommandResponse {
     id: i64,
@@ -54,6 +66,18 @@ pub struct ScheduledCommandResponse {
     command: String,
     status: String,
     run_at: String,
+    last_error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RecurringScheduleResponse {
+    id: i64,
+    device_id: String,
+    start_time: String,
+    end_time: String,
+    enabled: bool,
+    last_started_on: Option<String>,
+    last_ended_on: Option<String>,
     last_error: Option<String>,
 }
 
@@ -77,6 +101,21 @@ impl From<ScheduledCommandJob> for ScheduledCommandResponse {
             status: status_to_api(job.status).to_string(),
             run_at: job.run_at,
             last_error: job.last_error,
+        }
+    }
+}
+
+impl From<RecurringSchedule> for RecurringScheduleResponse {
+    fn from(schedule: RecurringSchedule) -> Self {
+        Self {
+            id: schedule.id,
+            device_id: schedule.device_id.as_str().to_string(),
+            start_time: schedule.start_time,
+            end_time: schedule.end_time,
+            enabled: schedule.enabled,
+            last_started_on: schedule.last_started_on,
+            last_ended_on: schedule.last_ended_on,
+            last_error: schedule.last_error,
         }
     }
 }
@@ -179,6 +218,65 @@ pub async fn cancel_schedule(State(state): State<AppState>, Path(id): Path<i64>)
         Ok(()) => StatusCode::NO_CONTENT,
         Err(error) => {
             log::error!("failed to cancel scheduled command: {error:#}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+pub async fn list_recurring_schedules(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let schedules: Vec<RecurringScheduleResponse> =
+        match state.app_service.list_recurring_schedules(&id).await {
+            Ok(schedules) => schedules
+                .into_iter()
+                .map(RecurringScheduleResponse::from)
+                .collect(),
+            Err(error) => {
+                log::error!("failed to list recurring schedules: {error:#}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+    Json(schedules).into_response()
+}
+
+pub async fn create_recurring_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<CreateRecurringScheduleRequest>,
+) -> impl IntoResponse {
+    match state
+        .app_service
+        .create_recurring_schedule(&id, request.start_time, request.end_time)
+        .await
+    {
+        Ok(schedule) => (
+            StatusCode::CREATED,
+            Json(RecurringScheduleResponse::from(schedule)),
+        )
+            .into_response(),
+        Err(error) => {
+            log::error!("failed to create recurring schedule: {error:#}");
+            StatusCode::BAD_REQUEST.into_response()
+        }
+    }
+}
+
+pub async fn update_recurring_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(request): Json<UpdateRecurringScheduleRequest>,
+) -> StatusCode {
+    match state
+        .app_service
+        .set_recurring_schedule_enabled(id, request.enabled)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(error) => {
+            log::error!("failed to update recurring schedule: {error:#}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }

@@ -146,6 +146,33 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
     .await
     .context("failed to migrate scheduled_commands due index")?;
 
+    sqlx::query(
+        r#"
+        create table if not exists recurring_schedules (
+            id bigserial primary key,
+            device_id text not null references devices(id) on delete cascade,
+            start_time time not null,
+            end_time time not null,
+            enabled boolean not null default true,
+            last_started_on date,
+            last_ended_on date,
+            last_error text,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate recurring_schedules table")?;
+
+    sqlx::query(
+        "create index if not exists recurring_schedules_enabled_idx on recurring_schedules (enabled, device_id, id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate recurring_schedules enabled index")?;
+
     Ok(())
 }
 

@@ -9,9 +9,10 @@ use event_hub::{
         },
         repositories::device_event_repository::PostgresDeviceEventRepository,
         repositories::device_repository::PostgresDeviceRepository,
+        repositories::recurring_schedule_repository::PostgresRecurringScheduleRepository,
         repositories::scheduled_command_repository::PostgresScheduledCommandRepository,
         transport::mqtt::client::{MqttConfig, MqttRuntime},
-        workers::{availability_watchdog, scheduled_commands},
+        workers::{availability_watchdog, recurring_schedules, scheduled_commands},
     },
     presentation::http::{routes::create_router, state::AppState},
 };
@@ -37,6 +38,10 @@ async fn main() -> anyhow::Result<()> {
         app_time_zone.clone(),
     ));
     let scheduled_command_repository = Arc::new(PostgresScheduledCommandRepository::new(
+        postgres.clone(),
+        app_time_zone.clone(),
+    ));
+    let recurring_schedule_repository = Arc::new(PostgresRecurringScheduleRepository::new(
         postgres,
         app_time_zone.clone(),
     ));
@@ -56,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         repository,
         event_repository,
         scheduled_command_repository,
+        recurring_schedule_repository,
         commands,
     ));
     let app = create_router(AppState {
@@ -71,6 +77,11 @@ async fn main() -> anyhow::Result<()> {
         app_service.clone(),
         Duration::from_secs(env("SCHEDULED_COMMAND_INTERVAL_SECS", "5").parse()?),
         env("SCHEDULED_COMMAND_BATCH_SIZE", "25").parse()?,
+    );
+    recurring_schedules::spawn(
+        app_service.clone(),
+        Duration::from_secs(env("RECURRING_SCHEDULE_INTERVAL_SECS", "5").parse()?),
+        env("RECURRING_SCHEDULE_BATCH_SIZE", "25").parse()?,
     );
 
     let mut connection = mqtt.connection;

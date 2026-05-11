@@ -9,6 +9,7 @@ Event Hub is a small IoT service for Zigbee2MQTT devices. It listens to MQTT eve
 - Device event history
 - Direct turn on/off commands
 - One-shot scheduled device commands
+- Daily recurring schedules with start/end times
 - Availability watchdog for stale devices
 - Postgres-backed storage with startup schema bootstrap
 
@@ -42,6 +43,8 @@ DEVICE_STALE_AFTER_SECS=300
 DEVICE_WATCHDOG_INTERVAL_SECS=60
 SCHEDULED_COMMAND_INTERVAL_SECS=5
 SCHEDULED_COMMAND_BATCH_SIZE=25
+RECURRING_SCHEDULE_INTERVAL_SECS=5
+RECURRING_SCHEDULE_BATCH_SIZE=25
 ```
 
 Notes:
@@ -71,6 +74,10 @@ make device-events DEVICE=plug_plant LIMIT=50
 make schedules DEVICE=plug_plant
 make schedule DEVICE=plug_plant COMMAND=turn_off RUN_AT='2026-05-09 22:00:00'
 make cancel-schedule SCHEDULE_ID=1
+make recurring-schedules DEVICE=plug_plant
+make recurring-schedule DEVICE=plug_plant START_TIME='10:00:00' END_TIME='00:00:00'
+make recurring-schedule-disable SCHEDULE_ID=1
+make recurring-schedule-enable SCHEDULE_ID=1
 make turn-on DEVICE=plug_plant
 make turn-off DEVICE=plug_plant
 ```
@@ -259,6 +266,88 @@ Example:
 
 ```bash
 curl -X DELETE 'http://localhost:3000/schedules/1'
+```
+
+Success status:
+
+```text
+204 No Content
+```
+
+### List Recurring Schedules
+
+```http
+GET /devices/:id/recurring-schedules
+```
+
+Example:
+
+```bash
+curl 'http://localhost:3000/devices/plug_plant/recurring-schedules'
+```
+
+Response:
+
+```json
+[
+  {
+    "id": 1,
+    "device_id": "plug_plant",
+    "start_time": "10:00:00",
+    "end_time": "00:00:00",
+    "enabled": true,
+    "last_started_on": "2026-05-12",
+    "last_ended_on": null,
+    "last_error": null
+  }
+]
+```
+
+### Create Recurring Schedule
+
+```http
+POST /devices/:id/recurring-schedules
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "start_time": "10:00:00",
+  "end_time": "00:00:00"
+}
+```
+
+The recurring schedule runs every day in `APP_TIME_ZONE`. At `start_time` it sends `turn_on`; at `end_time` it sends `turn_off`. If `end_time` is earlier than or equal to `start_time`, the off command is treated as the next local day.
+
+Example:
+
+```bash
+curl -X POST 'http://localhost:3000/devices/plug_plant/recurring-schedules' \
+  -H 'content-type: application/json' \
+  -d '{"start_time":"10:00:00","end_time":"00:00:00"}'
+```
+
+Success status:
+
+```text
+201 Created
+```
+
+### Enable Or Disable Recurring Schedule
+
+```http
+PATCH /recurring-schedules/:id
+Content-Type: application/json
+```
+
+Example:
+
+```bash
+curl -X PATCH 'http://localhost:3000/recurring-schedules/1' \
+  -H 'content-type: application/json' \
+  -d '{"enabled":false}'
 ```
 
 Success status:

@@ -6,6 +6,9 @@ use serde_json::json;
 
 use crate::{
     application::device_event::{DeviceEvent, DeviceEventLogEntry, IncomingDeviceEvent},
+    application::recurring_schedule::{
+        DueRecurringScheduleCommand, RecurringSchedule, RecurringScheduleCommand,
+    },
     application::scheduled_command::{
         DueScheduledCommandJob, ScheduledCommand, ScheduledCommandJob,
     },
@@ -46,6 +49,21 @@ pub trait ScheduledCommandRepository: Send + Sync {
     async fn mark_failed(&self, id: i64, error: String) -> Result<()>;
 }
 
+#[async_trait]
+pub trait RecurringScheduleRepository: Send + Sync {
+    async fn create(
+        &self,
+        device_id: DeviceId,
+        start_time: String,
+        end_time: String,
+    ) -> Result<RecurringSchedule>;
+    async fn list_for_device(&self, device_id: DeviceId) -> Result<Vec<RecurringSchedule>>;
+    async fn claim_due(&self, limit: i64) -> Result<Vec<DueRecurringScheduleCommand>>;
+    async fn set_enabled(&self, id: i64, enabled: bool) -> Result<()>;
+    async fn mark_succeeded(&self, id: i64) -> Result<()>;
+    async fn mark_failed(&self, id: i64, error: String) -> Result<()>;
+}
+
 pub trait DeviceCommandGateway: Send + Sync {
     fn turn_on(&self, id: &DeviceId) -> Result<()>;
     fn turn_off(&self, id: &DeviceId) -> Result<()>;
@@ -55,6 +73,7 @@ pub struct AppService {
     repository: Arc<dyn DeviceRepository>,
     events: Arc<dyn DeviceEventRepository>,
     scheduled_commands: Arc<dyn ScheduledCommandRepository>,
+    recurring_schedules: Arc<dyn RecurringScheduleRepository>,
     commands: Arc<dyn DeviceCommandGateway>,
 }
 
@@ -63,12 +82,14 @@ impl AppService {
         repository: Arc<dyn DeviceRepository>,
         events: Arc<dyn DeviceEventRepository>,
         scheduled_commands: Arc<dyn ScheduledCommandRepository>,
+        recurring_schedules: Arc<dyn RecurringScheduleRepository>,
         commands: Arc<dyn DeviceCommandGateway>,
     ) -> Self {
         Self {
             repository,
             events,
             scheduled_commands,
+            recurring_schedules,
             commands,
         }
     }
@@ -110,6 +131,30 @@ impl AppService {
 
     pub async fn cancel_scheduled_command(&self, id: i64) -> Result<()> {
         self.scheduled_commands.cancel(id).await
+    }
+
+    pub async fn create_recurring_schedule(
+        &self,
+        device_id: &str,
+        start_time: String,
+        end_time: String,
+    ) -> Result<RecurringSchedule> {
+        self.recurring_schedules
+            .create(DeviceId::new(device_id.to_string()), start_time, end_time)
+            .await
+    }
+
+    pub async fn list_recurring_schedules(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<RecurringSchedule>> {
+        self.recurring_schedules
+            .list_for_device(DeviceId::new(device_id.to_string()))
+            .await
+    }
+
+    pub async fn set_recurring_schedule_enabled(&self, id: i64, enabled: bool) -> Result<()> {
+        self.recurring_schedules.set_enabled(id, enabled).await
     }
 
     pub fn turn_on(&self, id: &str) -> Result<()> {
@@ -191,6 +236,36 @@ impl AppService {
                 Err(error) => {
                     self.scheduled_commands
                         .mark_failed(job.id, format!("{error:#}"))
+                        .await?;
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    pub async fn run_due_recurring_schedules(&self, limit: i64) -> Result<usize> {
+        let jobs = self
+            .recurring_schedules
+            .claim_due(limit.clamp(1, 100))
+            .await?;
+        let count = jobs.len();
+
+        for job in jobs {
+            let result = match job.command {
+                RecurringScheduleCommand::TurnOn => self.commands.turn_on(&job.device_id),
+                RecurringScheduleCommand::TurnOff => self.commands.turn_off(&job.device_id),
+            };
+
+            match result {
+                Ok(()) => {
+                    self.recurring_schedules
+                        .mark_succeeded(job.schedule_id)
+                        .await?;
+                }
+                Err(error) => {
+                    self.recurring_schedules
+                        .mark_failed(job.schedule_id, format!("{error:#}"))
                         .await?;
                 }
             }
