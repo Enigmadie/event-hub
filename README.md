@@ -30,6 +30,7 @@ MQTT_HOST=192.168.0.219
 MQTT_PORT=1883
 MQTT_CLIENT_ID=iot-hub
 HTTP_ADDR=127.0.0.1:3000
+HTTP_CORS_ALLOWED_ORIGINS=http://localhost:5173
 
 APP_TIME_ZONE=Europe/Moscow
 
@@ -50,6 +51,7 @@ RECURRING_SCHEDULE_BATCH_SIZE=25
 Notes:
 
 - `APP_TIME_ZONE` is used when parsing schedule `run_at` values and formatting API timestamps.
+- `HTTP_CORS_ALLOWED_ORIGINS` is a comma-separated list of dashboard origins allowed to call the API.
 - Postgres timestamps are stored as `timestamptz`.
 - The service creates `DB_NAME` if it does not exist, then creates/updates the required tables.
 - Keep `.env` local. Update `.env.example` when adding new configuration keys.

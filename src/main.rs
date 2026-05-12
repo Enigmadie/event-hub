@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use axum::http::{HeaderValue, Method};
 use event_hub::{
     application::app_service::AppService,
     infrastructure::{
@@ -17,6 +18,7 @@ use event_hub::{
     presentation::http::{routes::create_router, state::AppState},
 };
 use rumqttc::{Event, Packet};
+use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -64,9 +66,12 @@ async fn main() -> anyhow::Result<()> {
         recurring_schedule_repository,
         commands,
     ));
-    let app = create_router(AppState {
-        app_service: app_service.clone(),
-    });
+    let app = create_router(
+        AppState {
+            app_service: app_service.clone(),
+        },
+        cors_layer()?,
+    );
 
     availability_watchdog::spawn(
         app_service.clone(),
@@ -125,4 +130,24 @@ async fn main() -> anyhow::Result<()> {
 
 fn env(name: &str, fallback: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn cors_layer() -> anyhow::Result<CorsLayer> {
+    let allowed_origins = env("HTTP_CORS_ALLOWED_ORIGINS", "http://localhost:5173");
+    let origins = allowed_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(HeaderValue::from_str)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let cors = if origins.is_empty() {
+        CorsLayer::new().allow_origin(Any)
+    } else {
+        CorsLayer::new().allow_origin(origins)
+    };
+
+    Ok(cors
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_headers(Any))
 }

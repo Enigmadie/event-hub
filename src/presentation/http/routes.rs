@@ -2,10 +2,11 @@ use axum::{
     Router,
     routing::{get, patch, post},
 };
+use tower_http::cors::CorsLayer;
 
 use super::{devices, handlers::health, state::AppState};
 
-pub fn create_router(state: AppState) -> Router {
+pub fn create_router(state: AppState, cors: CorsLayer) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/devices", get(devices::list_devices))
@@ -29,4 +30,5 @@ pub fn create_router(state: AppState) -> Router {
         .route("/devices/:id/turn-on", post(devices::turn_on))
         .route("/devices/:id/turn-off", post(devices::turn_off))
         .with_state(state)
+        .layer(cors)
 }
