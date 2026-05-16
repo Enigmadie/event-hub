@@ -1,6 +1,6 @@
 use crate::domain::{DeviceAvailability, DeviceId, DeviceState};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DeviceEvent {
     DeviceDiscovered {
         device_id: DeviceId,
@@ -14,6 +14,10 @@ pub enum DeviceEvent {
         device_id: DeviceId,
         availability: DeviceAvailability,
     },
+    DeviceReported {
+        device_id: DeviceId,
+        values: Vec<DeviceReportedValue>,
+    },
 }
 
 impl DeviceEvent {
@@ -22,8 +26,15 @@ impl DeviceEvent {
             Self::DeviceDiscovered { device_id, .. } => device_id,
             Self::StateChanged { device_id, .. } => device_id,
             Self::AvailabilityChanged { device_id, .. } => device_id,
+            Self::DeviceReported { device_id, .. } => device_id,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceReportedValue {
+    pub property: String,
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +42,7 @@ pub enum DeviceEventKind {
     DeviceDiscovered,
     StateChanged,
     AvailabilityChanged,
+    DeviceReported,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +70,7 @@ pub struct DeviceEventLogEntry {
     pub name: Option<String>,
     pub state: Option<DeviceState>,
     pub availability: Option<DeviceAvailability>,
+    pub values: Option<serde_json::Map<String, serde_json::Value>>,
     pub source_topic: String,
     pub payload: serde_json::Value,
     pub occurred_at: String,

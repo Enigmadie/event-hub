@@ -2,7 +2,7 @@ use rumqttc::Publish;
 use serde_json::Value;
 
 use crate::{
-    application::device_event::{DeviceEvent, IncomingDeviceEvent},
+    application::device_event::{DeviceEvent, DeviceReportedValue, IncomingDeviceEvent},
     domain::{DeviceAvailability, DeviceId, DeviceState},
 };
 
@@ -21,6 +21,11 @@ pub enum Z2mEvent {
     Availability {
         device: String,
         online: bool,
+    },
+    DeviceReport {
+        device: String,
+        values: Vec<DeviceReportedValue>,
+        raw: Value,
     },
 }
 
@@ -43,6 +48,10 @@ impl Z2mEvent {
                     DeviceAvailability::Offline
                 },
             },
+            Self::DeviceReport { device, values, .. } => DeviceEvent::DeviceReported {
+                device_id: DeviceId::new(device),
+                values,
+            },
         }
     }
 
@@ -55,6 +64,7 @@ impl Z2mEvent {
         match self {
             Self::DeviceDiscovered { raw, .. } => raw.clone(),
             Self::DeviceState { raw, .. } => raw.clone(),
+            Self::DeviceReport { raw, .. } => raw.clone(),
             Self::Availability { online, .. } => {
                 Value::String(if *online { "online" } else { "offline" }.to_string())
             }
@@ -83,30 +93,64 @@ pub fn parse(p: Publish) -> Vec<(String, Z2mEvent)> {
     }
 
     match sub {
-        None => parse_device_state(topic, device, &p.payload),
+        None => parse_device_message(topic, device, &p.payload),
         Some("availability") => parse_availability(topic, device, &p.payload),
         _ => Vec::new(),
     }
 }
 
-fn parse_device_state(topic: String, device: String, payload: &[u8]) -> Vec<(String, Z2mEvent)> {
+fn parse_device_message(topic: String, device: String, payload: &[u8]) -> Vec<(String, Z2mEvent)> {
     let Some(json) = serde_json::from_slice::<Value>(payload).ok() else {
         return Vec::new();
     };
-    let state = match json.get("state").and_then(|value| value.as_str()) {
-        Some("ON") => DeviceState::On,
-        Some("OFF") => DeviceState::Off,
-        _ => return Vec::new(),
-    };
 
-    vec![(
-        topic,
-        Z2mEvent::DeviceState {
-            device,
-            state,
-            raw: json,
-        },
-    )]
+    let mut events = Vec::new();
+
+    if let Some(state) = match json.get("state").and_then(|value| value.as_str()) {
+        Some("ON") => Some(DeviceState::On),
+        Some("OFF") => Some(DeviceState::Off),
+        _ => None,
+    } {
+        events.push((
+            topic.clone(),
+            Z2mEvent::DeviceState {
+                device: device.clone(),
+                state,
+                raw: json.clone(),
+            },
+        ));
+    }
+
+    if let Some(values) = reported_values(&json) {
+        events.push((
+            topic,
+            Z2mEvent::DeviceReport {
+                device,
+                values,
+                raw: json,
+            },
+        ));
+    }
+
+    events
+}
+
+fn reported_values(json: &Value) -> Option<Vec<DeviceReportedValue>> {
+    let values = json.as_object()?;
+
+    let values = values
+        .iter()
+        .map(|(property, value)| DeviceReportedValue {
+            property: property.clone(),
+            value: value.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
 }
 
 fn parse_availability(topic: String, device: String, payload: &[u8]) -> Vec<(String, Z2mEvent)> {
@@ -165,6 +209,7 @@ mod tests {
     use serde_json::json;
 
     use super::{Z2mEvent, parse};
+    use crate::application::device_event::DeviceReportedValue;
     use crate::domain::DeviceState;
 
     #[test]
@@ -179,12 +224,61 @@ mod tests {
 
         assert_eq!(
             events,
+            vec![
+                (
+                    "zigbee2mqtt/plug_plant".to_string(),
+                    Z2mEvent::DeviceState {
+                        device: "plug_plant".to_string(),
+                        state: DeviceState::On,
+                        raw: json!({ "state": "ON" }),
+                    }
+                ),
+                (
+                    "zigbee2mqtt/plug_plant".to_string(),
+                    Z2mEvent::DeviceReport {
+                        device: "plug_plant".to_string(),
+                        values: vec![DeviceReportedValue {
+                            property: "state".to_string(),
+                            value: json!("ON"),
+                        }],
+                        raw: json!({ "state": "ON" }),
+                    }
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_device_report() {
+        let publish = Publish::new(
+            "zigbee2mqtt/window_opener",
+            QoS::AtLeastOnce,
+            r#"{"position":75,"status":"off","linkquality":240}"#,
+        );
+
+        let events = parse(publish);
+
+        assert_eq!(
+            events,
             vec![(
-                "zigbee2mqtt/plug_plant".to_string(),
-                Z2mEvent::DeviceState {
-                    device: "plug_plant".to_string(),
-                    state: DeviceState::On,
-                    raw: json!({ "state": "ON" }),
+                "zigbee2mqtt/window_opener".to_string(),
+                Z2mEvent::DeviceReport {
+                    device: "window_opener".to_string(),
+                    values: vec![
+                        DeviceReportedValue {
+                            property: "linkquality".to_string(),
+                            value: json!(240),
+                        },
+                        DeviceReportedValue {
+                            property: "position".to_string(),
+                            value: json!(75),
+                        },
+                        DeviceReportedValue {
+                            property: "status".to_string(),
+                            value: json!("off"),
+                        },
+                    ],
+                    raw: json!({ "position": 75, "status": "off", "linkquality": 240 }),
                 }
             )]
         );

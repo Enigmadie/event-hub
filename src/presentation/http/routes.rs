@@ -20,6 +20,10 @@ pub fn create_router(state: AppState, cors: CorsLayer) -> Router {
             get(devices::list_recurring_schedules).post(devices::create_recurring_schedule),
         )
         .route(
+            "/devices/:id/recurring-commands",
+            get(devices::list_recurring_commands).post(devices::create_recurring_command),
+        )
+        .route(
             "/schedules/:id",
             axum::routing::delete(devices::cancel_schedule),
         )
@@ -27,8 +31,16 @@ pub fn create_router(state: AppState, cors: CorsLayer) -> Router {
             "/recurring-schedules/:id",
             patch(devices::update_recurring_schedule),
         )
+        .route(
+            "/recurring-commands/:id",
+            patch(devices::update_recurring_command),
+        )
         .route("/devices/:id/turn-on", post(devices::turn_on))
         .route("/devices/:id/turn-off", post(devices::turn_off))
+        .route("/devices/:id/open", post(devices::open_cover))
+        .route("/devices/:id/close", post(devices::close_cover))
+        .route("/devices/:id/stop", post(devices::stop_cover))
+        .route("/devices/:id/position", post(devices::set_cover_position))
         .with_state(state)
         .layer(cors)
 }

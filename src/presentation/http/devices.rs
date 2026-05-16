@@ -7,21 +7,20 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
-use crate::{
-    application::{
-        device_event::DeviceEventLogEntry,
-        recurring_schedule::RecurringSchedule,
-        scheduled_command::{ScheduledCommand, ScheduledCommandJob, ScheduledCommandStatus},
-    },
-    domain::Device,
+use crate::application::{
+    app_service::DeviceSummary,
+    device_event::DeviceEventLogEntry,
+    recurring_command::{DeviceCommand, RecurringCommand},
+    recurring_schedule::RecurringSchedule,
+    scheduled_command::{ScheduledCommand, ScheduledCommandJob, ScheduledCommandStatus},
 };
 
 #[derive(Serialize)]
 pub struct DeviceResponse {
     id: String,
     name: String,
-    state: String,
     availability: String,
+    values: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +36,7 @@ pub struct DeviceEventResponse {
     name: Option<String>,
     state: Option<String>,
     availability: Option<String>,
+    values: Option<serde_json::Map<String, serde_json::Value>>,
     source_topic: String,
     payload: serde_json::Value,
     occurred_at: String,
@@ -57,6 +57,24 @@ pub struct CreateRecurringScheduleRequest {
 #[derive(Deserialize)]
 pub struct UpdateRecurringScheduleRequest {
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+pub struct CreateRecurringCommandRequest {
+    command: String,
+    #[serde(default = "empty_payload")]
+    payload: serde_json::Value,
+    local_time: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateRecurringCommandRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SetCoverPositionRequest {
+    position: u8,
 }
 
 #[derive(Serialize)]
@@ -81,13 +99,26 @@ pub struct RecurringScheduleResponse {
     last_error: Option<String>,
 }
 
-impl From<Device> for DeviceResponse {
-    fn from(device: Device) -> Self {
+#[derive(Serialize)]
+pub struct RecurringCommandResponse {
+    id: i64,
+    device_id: String,
+    command: String,
+    payload: serde_json::Value,
+    local_time: String,
+    enabled: bool,
+    last_run_on: Option<String>,
+    last_error: Option<String>,
+}
+
+impl From<DeviceSummary> for DeviceResponse {
+    fn from(summary: DeviceSummary) -> Self {
+        let device = summary.device;
         Self {
             id: device.id().as_str().to_string(),
             name: device.name().as_str().to_string(),
-            state: format!("{:?}", device.status()),
             availability: format!("{:?}", device.availability()),
+            values: summary.latest_values,
         }
     }
 }
@@ -120,6 +151,21 @@ impl From<RecurringSchedule> for RecurringScheduleResponse {
     }
 }
 
+impl From<RecurringCommand> for RecurringCommandResponse {
+    fn from(command: RecurringCommand) -> Self {
+        Self {
+            id: command.id,
+            device_id: command.device_id.as_str().to_string(),
+            command: device_command_to_api(command.command).to_string(),
+            payload: command.payload,
+            local_time: command.local_time,
+            enabled: command.enabled,
+            last_run_on: command.last_run_on,
+            last_error: command.last_error,
+        }
+    }
+}
+
 impl From<DeviceEventLogEntry> for DeviceEventResponse {
     fn from(event: DeviceEventLogEntry) -> Self {
         Self {
@@ -131,6 +177,7 @@ impl From<DeviceEventLogEntry> for DeviceEventResponse {
             availability: event
                 .availability
                 .map(|availability| format!("{availability:?}")),
+            values: event.values,
             source_topic: event.source_topic,
             payload: event.payload,
             occurred_at: event.occurred_at,
@@ -282,12 +329,103 @@ pub async fn update_recurring_schedule(
     }
 }
 
+pub async fn list_recurring_commands(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let commands: Vec<RecurringCommandResponse> =
+        match state.app_service.list_recurring_commands(&id).await {
+            Ok(commands) => commands
+                .into_iter()
+                .map(RecurringCommandResponse::from)
+                .collect(),
+            Err(error) => {
+                log::error!("failed to list recurring commands: {error:#}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+    Json(commands).into_response()
+}
+
+pub async fn create_recurring_command(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<CreateRecurringCommandRequest>,
+) -> impl IntoResponse {
+    let Some(command) = device_command_from_api(&request.command) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+
+    if command == DeviceCommand::SetPosition && !valid_position_payload(&request.payload) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    match state
+        .app_service
+        .create_recurring_command(&id, command, request.payload, request.local_time)
+        .await
+    {
+        Ok(command) => (
+            StatusCode::CREATED,
+            Json(RecurringCommandResponse::from(command)),
+        )
+            .into_response(),
+        Err(error) => {
+            log::error!("failed to create recurring command: {error:#}");
+            StatusCode::BAD_REQUEST.into_response()
+        }
+    }
+}
+
+pub async fn update_recurring_command(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(request): Json<UpdateRecurringCommandRequest>,
+) -> StatusCode {
+    match state
+        .app_service
+        .set_recurring_command_enabled(id, request.enabled)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(error) => {
+            log::error!("failed to update recurring command: {error:#}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 pub async fn turn_on(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
     command_status(state.app_service.turn_on(&id))
 }
 
 pub async fn turn_off(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
     command_status(state.app_service.turn_off(&id))
+}
+
+pub async fn open_cover(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    command_status(state.app_service.open_cover(&id))
+}
+
+pub async fn close_cover(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    command_status(state.app_service.close_cover(&id))
+}
+
+pub async fn stop_cover(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    command_status(state.app_service.stop_cover(&id))
+}
+
+pub async fn set_cover_position(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<SetCoverPositionRequest>,
+) -> StatusCode {
+    if request.position > 100 {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    command_status(state.app_service.set_cover_position(&id, request.position))
 }
 
 fn command_from_api(value: &str) -> Option<ScheduledCommand> {
@@ -313,6 +451,40 @@ fn status_to_api(status: ScheduledCommandStatus) -> &'static str {
         ScheduledCommandStatus::Failed => "failed",
         ScheduledCommandStatus::Cancelled => "cancelled",
     }
+}
+
+fn device_command_from_api(value: &str) -> Option<DeviceCommand> {
+    match value {
+        "turn_on" => Some(DeviceCommand::TurnOn),
+        "turn_off" => Some(DeviceCommand::TurnOff),
+        "open" => Some(DeviceCommand::Open),
+        "close" => Some(DeviceCommand::Close),
+        "stop" => Some(DeviceCommand::Stop),
+        "set_position" => Some(DeviceCommand::SetPosition),
+        _ => None,
+    }
+}
+
+fn device_command_to_api(command: DeviceCommand) -> &'static str {
+    match command {
+        DeviceCommand::TurnOn => "turn_on",
+        DeviceCommand::TurnOff => "turn_off",
+        DeviceCommand::Open => "open",
+        DeviceCommand::Close => "close",
+        DeviceCommand::Stop => "stop",
+        DeviceCommand::SetPosition => "set_position",
+    }
+}
+
+fn valid_position_payload(payload: &serde_json::Value) -> bool {
+    payload
+        .get("position")
+        .and_then(|value| value.as_u64())
+        .is_some_and(|position| position <= 100)
+}
+
+fn empty_payload() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 fn command_status(result: anyhow::Result<()>) -> StatusCode {

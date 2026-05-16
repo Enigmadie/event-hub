@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use sqlx::Row;
 
 use crate::{
-    application::app_service::DeviceRepository,
+    application::{
+        app_service::{DeviceRepository, DeviceSummary},
+        device_event::DeviceReportedValue,
+    },
     domain::{Device, DeviceAvailability, DeviceId, DeviceName, DeviceState},
 };
 
@@ -21,13 +24,28 @@ impl PostgresDeviceRepository {
 
 #[async_trait]
 impl DeviceRepository for PostgresDeviceRepository {
-    async fn list(&self) -> Result<Vec<Device>> {
-        let rows = sqlx::query("select id, name, state, availability from devices order by id")
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to list devices")?;
+    async fn list(&self) -> Result<Vec<DeviceSummary>> {
+        let rows = sqlx::query(
+            r#"
+            select
+                d.id,
+                d.name,
+                d.availability,
+                coalesce(
+                    jsonb_object_agg(v.property, v.value) filter (where v.property is not null),
+                    '{}'::jsonb
+                ) as latest_values
+            from devices d
+            left join device_latest_values v on v.device_id = d.id
+            group by d.id, d.name, d.availability
+            order by d.id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list devices")?;
 
-        rows.into_iter().map(device_from_row).collect()
+        rows.into_iter().map(device_summary_from_row).collect()
     }
 
     async fn upsert(&self, id: DeviceId, name: DeviceName) -> Result<()> {
@@ -101,6 +119,46 @@ impl DeviceRepository for PostgresDeviceRepository {
         Ok(())
     }
 
+    async fn update_latest_values(
+        &self,
+        id: DeviceId,
+        values: Vec<DeviceReportedValue>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            insert into devices (id, name, state, availability, last_seen_at)
+            values ($1, $1, 'OFF', 'Unknown', now())
+            on conflict (id) do update set
+                last_seen_at = now(),
+                updated_at = now()
+            "#,
+        )
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to ensure device row for {}", id.as_str()))?;
+
+        for value in values {
+            sqlx::query(
+                r#"
+                insert into device_latest_values (device_id, property, value, updated_at)
+                values ($1, $2, $3, now())
+                on conflict (device_id, property) do update set
+                    value = excluded.value,
+                    updated_at = now()
+                "#,
+            )
+            .bind(id.as_str())
+            .bind(value.property)
+            .bind(value.value)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("failed to update latest values for {}", id.as_str()))?;
+        }
+
+        Ok(())
+    }
+
     async fn mark_stale_offline(&self, stale_after: Duration) -> Result<Vec<DeviceId>> {
         let stale_after_secs = i64::try_from(stale_after.as_secs())
             .context("DEVICE_STALE_AFTER_SECS does not fit into i64")?;
@@ -132,38 +190,31 @@ impl DeviceRepository for PostgresDeviceRepository {
     }
 }
 
-fn device_from_row(row: sqlx::postgres::PgRow) -> Result<Device> {
+fn device_summary_from_row(row: sqlx::postgres::PgRow) -> Result<DeviceSummary> {
     let id: String = row.try_get("id")?;
     let name: String = row.try_get("name")?;
-    let state: String = row.try_get("state")?;
     let availability: String = row.try_get("availability")?;
+    let latest_values: serde_json::Value = row.try_get("latest_values")?;
 
     let id = DeviceId::new(id);
-    let mut device = Device::new(
-        id.clone(),
-        DeviceName::new(name),
-        state_from_db(&state).with_context(|| format!("invalid state for {}", id.as_str()))?,
-    );
+    let mut device = Device::new(id.clone(), DeviceName::new(name));
     device.set_availability(
         availability_from_db(&availability)
             .with_context(|| format!("invalid availability for {}", id.as_str()))?,
     );
 
-    Ok(device)
+    let latest_values = latest_values.as_object().cloned().unwrap_or_default();
+
+    Ok(DeviceSummary {
+        device,
+        latest_values,
+    })
 }
 
 fn state_to_db(state: DeviceState) -> &'static str {
     match state {
         DeviceState::On => "ON",
         DeviceState::Off => "OFF",
-    }
-}
-
-fn state_from_db(value: &str) -> Result<DeviceState> {
-    match value {
-        "ON" => Ok(DeviceState::On),
-        "OFF" => Ok(DeviceState::Off),
-        _ => bail!("unknown device state {value}"),
     }
 }
 

@@ -107,7 +107,7 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
         r#"
         alter table device_events
         add constraint device_events_kind_check
-        check (kind in ('DeviceDiscovered', 'StateChanged', 'AvailabilityChanged'))
+        check (kind in ('DeviceDiscovered', 'StateChanged', 'AvailabilityChanged', 'DeviceReported'))
         "#,
     )
     .execute(pool)
@@ -120,6 +120,21 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to migrate device_events device/time index")?;
+
+    sqlx::query(
+        r#"
+        create table if not exists device_latest_values (
+            device_id text not null references devices(id) on delete cascade,
+            property text not null,
+            value jsonb not null,
+            updated_at timestamptz not null default now(),
+            primary key (device_id, property)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate device_latest_values table")?;
 
     sqlx::query(
         r#"
@@ -172,6 +187,33 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to migrate recurring_schedules enabled index")?;
+
+    sqlx::query(
+        r#"
+        create table if not exists recurring_device_commands (
+            id bigserial primary key,
+            device_id text not null references devices(id) on delete cascade,
+            command text not null check (command in ('turn_on', 'turn_off', 'open', 'close', 'stop', 'set_position')),
+            payload jsonb not null default '{}'::jsonb,
+            local_time time not null,
+            enabled boolean not null default true,
+            last_run_on date,
+            last_error text,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate recurring_device_commands table")?;
+
+    sqlx::query(
+        "create index if not exists recurring_device_commands_due_idx on recurring_device_commands (enabled, local_time, id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate recurring_device_commands due index")?;
 
     Ok(())
 }

@@ -1,21 +1,17 @@
-use crate::domain::device::{
-    availability::DeviceAvailability, id::DeviceId, name::DeviceName, state::DeviceState,
-};
+use crate::domain::device::{availability::DeviceAvailability, id::DeviceId, name::DeviceName};
 
 #[derive(Debug, Clone)]
 pub struct Device {
     id: DeviceId,
     name: DeviceName,
-    status: DeviceState,
     availability: DeviceAvailability,
 }
 
 impl Device {
-    pub fn new(id: DeviceId, name: DeviceName, status: DeviceState) -> Self {
+    pub fn new(id: DeviceId, name: DeviceName) -> Self {
         Self {
             id,
             name,
-            status,
             availability: DeviceAvailability::Unknown,
         }
     }
@@ -28,16 +24,8 @@ impl Device {
         &self.name
     }
 
-    pub fn status(&self) -> DeviceState {
-        self.status
-    }
-
     pub fn availability(&self) -> DeviceAvailability {
         self.availability
-    }
-
-    pub fn set_status(&mut self, status: DeviceState) {
-        self.status = status;
     }
 
     pub fn set_availability(&mut self, availability: DeviceAvailability) {

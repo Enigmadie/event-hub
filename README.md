@@ -8,6 +8,7 @@ Event Hub is a small IoT service for Zigbee2MQTT devices. It listens to MQTT eve
 - Current device state and availability
 - Device event history
 - Direct turn on/off commands
+- Direct cover open/close/stop/position commands
 - One-shot scheduled device commands
 - Daily recurring schedules with start/end times
 - Availability watchdog for stale devices
@@ -46,6 +47,8 @@ SCHEDULED_COMMAND_INTERVAL_SECS=5
 SCHEDULED_COMMAND_BATCH_SIZE=25
 RECURRING_SCHEDULE_INTERVAL_SECS=5
 RECURRING_SCHEDULE_BATCH_SIZE=25
+RECURRING_COMMAND_INTERVAL_SECS=5
+RECURRING_COMMAND_BATCH_SIZE=25
 ```
 
 Notes:
@@ -80,8 +83,16 @@ make recurring-schedules DEVICE=plug_plant
 make recurring-schedule DEVICE=plug_plant START_TIME='10:00:00' END_TIME='00:00:00'
 make recurring-schedule-disable SCHEDULE_ID=1
 make recurring-schedule-enable SCHEDULE_ID=1
+make recurring-commands DEVICE=window_opener
+make recurring-command DEVICE=window_opener COMMAND=set_position LOCAL_TIME='09:00:00' PAYLOAD='{"position":40}'
+make recurring-command-disable COMMAND_ID=1
+make recurring-command-enable COMMAND_ID=1
 make turn-on DEVICE=plug_plant
 make turn-off DEVICE=plug_plant
+make open-cover DEVICE=window_opener
+make close-cover DEVICE=window_opener
+make stop-cover DEVICE=window_opener
+make set-cover-position DEVICE=window_opener POSITION=50
 ```
 
 ## HTTP API
@@ -117,8 +128,11 @@ Response:
   {
     "id": "plug_plant",
     "name": "plug_plant",
-    "state": "On",
-    "availability": "Online"
+    "availability": "Online",
+    "values": {
+      "state": "ON",
+      "linkquality": 236
+    }
   }
 ]
 ```
@@ -148,6 +162,7 @@ Response:
     "name": null,
     "state": null,
     "availability": "Offline",
+    "values": null,
     "source_topic": "event-hub/watchdog",
     "payload": {
       "reason": "stale",
@@ -186,6 +201,39 @@ Example:
 
 ```bash
 curl -X POST 'http://localhost:3000/devices/plug_plant/turn-off'
+```
+
+Success status:
+
+```text
+202 Accepted
+```
+
+### Control Cover Device
+
+```http
+POST /devices/:id/open
+POST /devices/:id/close
+POST /devices/:id/stop
+POST /devices/:id/position
+Content-Type: application/json
+```
+
+Position body:
+
+```json
+{
+  "position": 50
+}
+```
+
+Examples:
+
+```bash
+curl -X POST 'http://localhost:3000/devices/window_opener/open'
+curl -X POST 'http://localhost:3000/devices/window_opener/position' \
+  -H 'content-type: application/json' \
+  -d '{"position":50}'
 ```
 
 Success status:
@@ -348,6 +396,102 @@ Example:
 
 ```bash
 curl -X PATCH 'http://localhost:3000/recurring-schedules/1' \
+  -H 'content-type: application/json' \
+  -d '{"enabled":false}'
+```
+
+Success status:
+
+```text
+204 No Content
+```
+
+### List Recurring Commands
+
+```http
+GET /devices/:id/recurring-commands
+```
+
+Example:
+
+```bash
+curl 'http://localhost:3000/devices/window_opener/recurring-commands'
+```
+
+Response:
+
+```json
+[
+  {
+    "id": 1,
+    "device_id": "window_opener",
+    "command": "set_position",
+    "payload": {
+      "position": 40
+    },
+    "local_time": "09:00:00",
+    "enabled": true,
+    "last_run_on": "2026-05-16",
+    "last_error": null
+  }
+]
+```
+
+### Create Recurring Command
+
+```http
+POST /devices/:id/recurring-commands
+Content-Type: application/json
+```
+
+Supported commands:
+
+- `turn_on`
+- `turn_off`
+- `open`
+- `close`
+- `stop`
+- `set_position`
+
+Body:
+
+```json
+{
+  "command": "set_position",
+  "payload": {
+    "position": 40
+  },
+  "local_time": "09:00:00"
+}
+```
+
+`local_time` is interpreted in `APP_TIME_ZONE`. Each enabled recurring command runs at most once per local day.
+
+Example:
+
+```bash
+curl -X POST 'http://localhost:3000/devices/window_opener/recurring-commands' \
+  -H 'content-type: application/json' \
+  -d '{"command":"set_position","payload":{"position":40},"local_time":"09:00:00"}'
+```
+
+Success status:
+
+```text
+201 Created
+```
+
+### Enable Or Disable Recurring Command
+
+```http
+PATCH /recurring-commands/:id
+Content-Type: application/json
+```
+
+Example:
+
+```bash
+curl -X PATCH 'http://localhost:3000/recurring-commands/1' \
   -H 'content-type: application/json' \
   -d '{"enabled":false}'
 ```

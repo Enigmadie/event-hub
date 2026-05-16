@@ -111,6 +111,7 @@ fn event_columns(
             None,
             Some(*availability),
         ),
+        DeviceEvent::DeviceReported { .. } => (DeviceEventKind::DeviceReported, None, None),
     }
 }
 
@@ -137,6 +138,11 @@ fn event_from_row(row: sqlx::postgres::PgRow) -> Result<DeviceEventLogEntry> {
             .as_deref()
             .map(availability_from_db)
             .transpose()?,
+        values: if kind == "DeviceReported" {
+            payload.as_object().cloned()
+        } else {
+            None
+        },
         source_topic,
         payload,
         occurred_at,
@@ -148,6 +154,7 @@ fn kind_to_db(kind: DeviceEventKind) -> &'static str {
         DeviceEventKind::DeviceDiscovered => "DeviceDiscovered",
         DeviceEventKind::StateChanged => "StateChanged",
         DeviceEventKind::AvailabilityChanged => "AvailabilityChanged",
+        DeviceEventKind::DeviceReported => "DeviceReported",
     }
 }
 
@@ -156,6 +163,7 @@ fn kind_from_db(value: &str) -> Result<DeviceEventKind> {
         "DeviceDiscovered" => Ok(DeviceEventKind::DeviceDiscovered),
         "StateChanged" => Ok(DeviceEventKind::StateChanged),
         "AvailabilityChanged" => Ok(DeviceEventKind::AvailabilityChanged),
+        "DeviceReported" => Ok(DeviceEventKind::DeviceReported),
         _ => bail!("unknown device event kind {value}"),
     }
 }
