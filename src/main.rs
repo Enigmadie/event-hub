@@ -18,9 +18,12 @@ use event_hub::{
             availability_watchdog, recurring_commands, recurring_schedules, scheduled_commands,
         },
     },
-    presentation::http::{routes::create_router, state::AppState},
+    presentation::http::{
+        routes::create_router,
+        state::{AppState, MqttHealth},
+    },
 };
-use rumqttc::{Event, Packet};
+use rumqttc::{Event, Packet, QoS};
 use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
@@ -61,10 +64,10 @@ async fn main() -> anyhow::Result<()> {
         port: env("MQTT_PORT", "1883").parse()?,
     });
 
-    for topic in subscriptions() {
-        log::info!("subscribing to {topic}");
-        mqtt.subscribe(&topic)?;
-    }
+    // Subscriptions are (re)applied on every ConnAck inside the event loop below,
+    // so they survive broker reconnects: the session is clean, so the broker drops
+    // them on each new connection.
+    let mqtt_health = MqttHealth::default();
     let commands = Arc::new(Z2mClient::new(mqtt.client.clone()));
     let app_service = Arc::new(AppService::new(
         repository,
@@ -77,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let app = create_router(
         AppState {
             app_service: app_service.clone(),
+            mqtt_health: mqtt_health.clone(),
         },
         cors_layer()?,
     );
@@ -103,10 +107,26 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut connection = mqtt.connection;
+    let resubscribe_client = mqtt.client.clone();
+    let topics = subscriptions();
+    let mqtt_health_loop = mqtt_health.clone();
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
+        // rumqttc's Connection keeps reconnecting as long as we keep polling it,
+        // so on error we mark ourselves disconnected, back off, and continue
+        // rather than breaking out (which would drop the client and permanently
+        // wedge every publish with "Failed to send mqtt requests to eventloop").
         for event in connection.iter() {
             match event {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    mqtt_health_loop.set_connected(true);
+                    for topic in &topics {
+                        log::info!("subscribing to {topic}");
+                        if let Err(error) = resubscribe_client.subscribe(topic, QoS::AtLeastOnce) {
+                            log::error!("failed to subscribe to {topic}: {error:?}");
+                        }
+                    }
+                }
                 Ok(Event::Incoming(Packet::Publish(p))) => {
                     for (topic, event) in parse(p) {
                         log::info!("device event from {topic}: {event:?}");
@@ -126,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
                 Ok(_) => {}
                 Err(error) => {
                     log::error!("MQTT connection error: {error:?}");
-                    break;
+                    mqtt_health_loop.set_connected(false);
+                    std::thread::sleep(Duration::from_secs(1));
                 }
             }
         }
