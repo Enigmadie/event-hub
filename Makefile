@@ -23,7 +23,7 @@ RECURRING_SCHEDULE_BATCH_SIZE ?= 25
 RECURRING_COMMAND_INTERVAL_SECS ?= 5
 RECURRING_COMMAND_BATCH_SIZE ?= 25
 
-.PHONY: help fmt check test run dev health devices device-events schedules schedule cancel-schedule recurring-schedules recurring-schedule recurring-schedule-enable recurring-schedule-disable recurring-commands recurring-command recurring-command-enable recurring-command-disable turn-on turn-off open-cover close-cover stop-cover set-cover-position clean
+.PHONY: help fmt check test run dev health metrics devices device-events schedules schedule cancel-schedule recurring-schedules recurring-schedule recurring-schedule-enable recurring-schedule-disable recurring-commands recurring-command recurring-command-enable recurring-command-disable turn-on turn-off open-cover close-cover stop-cover set-cover-position clean
 
 help:
 	@printf "Available targets:\n"
@@ -33,6 +33,7 @@ help:
 	@printf "  make run       Run the app with env defaults\n"
 	@printf "  make dev       Run fmt, check, test\n"
 	@printf "  make health    Call GET /health\n"
+	@printf "  make metrics   Call GET /metrics\n"
 	@printf "  make devices   Call GET /devices\n"
 	@printf '  make device-events GET /devices/$${DEVICE}/events\n'
 	@printf '  make schedules GET /devices/$${DEVICE}/schedules\n'
@@ -70,6 +71,9 @@ dev: fmt check test
 
 health:
 	curl -sS http://$(HTTP_ADDR)/health
+
+metrics:
+	curl -sS http://$(HTTP_ADDR)/metrics
 
 devices:
 	curl -sS http://$(HTTP_ADDR)/devices

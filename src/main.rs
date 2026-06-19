@@ -18,6 +18,7 @@ use event_hub::{
             availability_watchdog, recurring_commands, recurring_schedules, scheduled_commands,
         },
     },
+    observability::metrics::Metrics,
     presentation::http::{
         routes::create_router,
         state::{AppState, MqttHealth},
@@ -68,7 +69,8 @@ async fn main() -> anyhow::Result<()> {
     // so they survive broker reconnects: the session is clean, so the broker drops
     // them on each new connection.
     let mqtt_health = MqttHealth::default();
-    let commands = Arc::new(Z2mClient::new(mqtt.client.clone()));
+    let metrics = Metrics::default();
+    let commands = Arc::new(Z2mClient::new(mqtt.client.clone(), metrics.clone()));
     let app_service = Arc::new(AppService::new(
         repository,
         event_repository,
@@ -81,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         AppState {
             app_service: app_service.clone(),
             mqtt_health: mqtt_health.clone(),
+            metrics: metrics.clone(),
         },
         cors_layer()?,
     );
@@ -89,27 +92,32 @@ async fn main() -> anyhow::Result<()> {
         app_service.clone(),
         Duration::from_secs(env("DEVICE_STALE_AFTER_SECS", "300").parse()?),
         Duration::from_secs(env("DEVICE_WATCHDOG_INTERVAL_SECS", "60").parse()?),
+        metrics.clone(),
     );
     scheduled_commands::spawn(
         app_service.clone(),
         Duration::from_secs(env("SCHEDULED_COMMAND_INTERVAL_SECS", "5").parse()?),
         env("SCHEDULED_COMMAND_BATCH_SIZE", "25").parse()?,
+        metrics.clone(),
     );
     recurring_schedules::spawn(
         app_service.clone(),
         Duration::from_secs(env("RECURRING_SCHEDULE_INTERVAL_SECS", "5").parse()?),
         env("RECURRING_SCHEDULE_BATCH_SIZE", "25").parse()?,
+        metrics.clone(),
     );
     recurring_commands::spawn(
         app_service.clone(),
         Duration::from_secs(env("RECURRING_COMMAND_INTERVAL_SECS", "5").parse()?),
         env("RECURRING_COMMAND_BATCH_SIZE", "25").parse()?,
+        metrics.clone(),
     );
 
     let mut connection = mqtt.connection;
     let resubscribe_client = mqtt.client.clone();
     let topics = subscriptions();
     let mqtt_health_loop = mqtt_health.clone();
+    let metrics_loop = metrics.clone();
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         // rumqttc's Connection keeps reconnecting as long as we keep polling it,
@@ -120,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
             match event {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     mqtt_health_loop.set_connected(true);
+                    metrics_loop.record_mqtt_connect();
                     for topic in &topics {
                         log::info!("subscribing to {topic}");
                         if let Err(error) = resubscribe_client.subscribe(topic, QoS::AtLeastOnce) {
@@ -128,9 +137,12 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) => {
+                    metrics_loop.record_mqtt_publish_message();
                     for (topic, event) in parse(p) {
+                        metrics_loop.record_device_event();
                         log::info!("device event from {topic}: {event:?}");
                         let app_service = app_service.clone();
+                        let metrics = metrics_loop.clone();
                         runtime.spawn(async move {
                             if let Err(error) = app_service
                                 .handle_incoming_device_event(
@@ -138,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
                                 )
                                 .await
                             {
+                                metrics.record_device_event_error();
                                 log::error!("failed to handle device event: {error:#}");
                             }
                         });
@@ -147,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
                 Err(error) => {
                     log::error!("MQTT connection error: {error:?}");
                     mqtt_health_loop.set_connected(false);
+                    metrics_loop.record_mqtt_connection_error();
                     std::thread::sleep(Duration::from_secs(1));
                 }
             }

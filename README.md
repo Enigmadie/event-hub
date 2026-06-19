@@ -109,6 +109,21 @@ http://127.0.0.1:3000
 GET /health
 ```
 
+### Metrics
+
+```http
+GET /metrics
+```
+
+Prometheus text exposition with app-native health signals:
+
+- `iot_hub_mqtt_connected` - current MQTT broker connection state.
+- `iot_hub_mqtt_connects_total` / `iot_hub_mqtt_connection_errors_total` - reconnect/error counters.
+- `iot_hub_device_command_publish_total{result="success|failure"}` - command publish attempts to Zigbee2MQTT.
+- `iot_hub_device_events_total` / `iot_hub_device_event_errors_total` - incoming event processing counters.
+- `iot_hub_http_requests_total{status_class="..."}` - HTTP responses by status class.
+- `iot_hub_worker_runs_total` / `iot_hub_worker_processed_total` - background worker status.
+
 ### List Devices
 
 ```http

@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crate::application::app_service::AppService;
+use crate::observability::metrics::Metrics;
 
 /// Tracks whether the MQTT event loop currently has a live broker connection.
 /// Updated by the event loop (true on ConnAck, false on connection error) and
@@ -25,4 +26,5 @@ impl MqttHealth {
 pub struct AppState {
     pub app_service: Arc<AppService>,
     pub mqtt_health: MqttHealth,
+    pub metrics: Metrics,
 }

@@ -1,21 +1,28 @@
 use super::commands::{SetPositionPayload, SetStatePayload, set_topic};
-use crate::{application::app_service::DeviceCommandGateway, domain::DeviceId};
+use crate::{
+    application::app_service::DeviceCommandGateway, domain::DeviceId,
+    observability::metrics::Metrics,
+};
 
 pub struct Z2mClient {
     client: rumqttc::Client,
+    metrics: Metrics,
 }
 
 impl Z2mClient {
-    pub fn new(client: rumqttc::Client) -> Self {
-        Self { client }
+    pub fn new(client: rumqttc::Client, metrics: Metrics) -> Self {
+        Self { client, metrics }
     }
 
     fn set_state(&self, device: &DeviceId, state: &'static str) -> anyhow::Result<()> {
         let topic = set_topic(device.as_str());
         let payload = serde_json::to_vec(&SetStatePayload { state })?;
 
-        self.client
-            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)?;
+        let result = self
+            .client
+            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload);
+        self.metrics.record_device_command_publish(result.is_ok());
+        result?;
         Ok(())
     }
 
@@ -23,8 +30,11 @@ impl Z2mClient {
         let topic = set_topic(device.as_str());
         let payload = serde_json::to_vec(&SetPositionPayload { position })?;
 
-        self.client
-            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)?;
+        let result = self
+            .client
+            .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload);
+        self.metrics.record_device_command_publish(result.is_ok());
+        result?;
         Ok(())
     }
 }
