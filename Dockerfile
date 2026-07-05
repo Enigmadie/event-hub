@@ -11,6 +11,10 @@ COPY src ./src
 
 RUN cargo build --release
 
+FROM builder AS test
+
+RUN cargo test --release
+
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
