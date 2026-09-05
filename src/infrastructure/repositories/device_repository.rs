@@ -8,6 +8,7 @@ use crate::{
     application::{
         app_service::{DeviceRepository, DeviceSummary},
         device_event::DeviceReportedValue,
+        recurring_command::DeviceCommand,
     },
     domain::{Device, DeviceAvailability, DeviceId, DeviceName, DeviceState},
 };
@@ -31,6 +32,7 @@ impl DeviceRepository for PostgresDeviceRepository {
                 d.id,
                 d.name,
                 d.availability,
+                d.supported_commands,
                 coalesce(
                     jsonb_object_agg(v.property, v.value) filter (where v.property is not null),
                     '{}'::jsonb
@@ -64,6 +66,20 @@ impl DeviceRepository for PostgresDeviceRepository {
         .await
         .with_context(|| format!("failed to upsert device {}", id.as_str()))?;
 
+        Ok(())
+    }
+
+    async fn set_supported_commands(
+        &self,
+        id: DeviceId,
+        commands: Option<Vec<DeviceCommand>>,
+    ) -> Result<()> {
+        sqlx::query("update devices set supported_commands = $2, updated_at = now() where id = $1")
+            .bind(id.as_str())
+            .bind(commands.map(serde_json::to_value).transpose()?)
+            .execute(&self.pool)
+            .await
+            .context("failed to update device capabilities")?;
         Ok(())
     }
 
@@ -205,7 +221,9 @@ fn device_summary_from_row(row: sqlx::postgres::PgRow) -> Result<DeviceSummary> 
 
     let latest_values = latest_values.as_object().cloned().unwrap_or_default();
 
+    let commands: Option<serde_json::Value> = row.try_get("supported_commands")?;
     Ok(DeviceSummary {
+        supported_commands: commands.map(serde_json::from_value).transpose()?,
         device,
         latest_values,
     })

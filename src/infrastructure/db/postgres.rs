@@ -50,7 +50,7 @@ async fn ensure_database(config: &PostgresConfig) -> Result<()> {
     Ok(())
 }
 
-async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
+pub async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         r#"
         create table if not exists devices (
@@ -68,6 +68,11 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to migrate devices table")?;
+
+    sqlx::query("alter table devices add column if not exists supported_commands jsonb")
+        .execute(pool)
+        .await
+        .context("failed to migrate device capabilities")?;
 
     sqlx::query("alter table devices add column if not exists last_seen_at timestamptz")
         .execute(pool)

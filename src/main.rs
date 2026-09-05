@@ -8,6 +8,7 @@ use event_hub::{
         integrations::zigbee2mqtt::{
             client::Z2mClient, events::parse, subscriptions::subscriptions,
         },
+        notifications::ChangeBroadcast,
         repositories::device_event_repository::PostgresDeviceEventRepository,
         repositories::device_repository::PostgresDeviceRepository,
         repositories::recurring_command_repository::PostgresRecurringCommandRepository,
@@ -71,16 +72,22 @@ async fn main() -> anyhow::Result<()> {
     let mqtt_health = MqttHealth::default();
     let metrics = Metrics::default();
     let commands = Arc::new(Z2mClient::new(mqtt.client.clone(), metrics.clone()));
-    let app_service = Arc::new(AppService::new(
-        repository,
-        event_repository,
-        scheduled_command_repository,
-        recurring_schedule_repository,
-        recurring_command_repository,
-        commands,
-    ));
+    let changes = ChangeBroadcast::default();
+    let app_service = Arc::new(
+        AppService::new(
+            repository,
+            event_repository,
+            scheduled_command_repository,
+            recurring_schedule_repository,
+            recurring_command_repository,
+            commands,
+        )
+        .with_change_publisher(Arc::new(changes.clone())),
+    );
     let app = create_router(
         AppState {
+            time_zone: app_time_zone.into(),
+            changes,
             app_service: app_service.clone(),
             mqtt_health: mqtt_health.clone(),
             metrics: metrics.clone(),

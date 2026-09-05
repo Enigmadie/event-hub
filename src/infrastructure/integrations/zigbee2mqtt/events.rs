@@ -32,7 +32,8 @@ pub enum Z2mEvent {
 impl Z2mEvent {
     pub fn into_device_event(self) -> DeviceEvent {
         match self {
-            Self::DeviceDiscovered { device, name, .. } => DeviceEvent::DeviceDiscovered {
+            Self::DeviceDiscovered { device, name, raw } => DeviceEvent::DeviceDiscovered {
+                supported_commands: super::capabilities::supported_commands(&raw),
                 device_id: DeviceId::new(device),
                 name,
             },

@@ -23,7 +23,7 @@ RECURRING_SCHEDULE_BATCH_SIZE ?= 25
 RECURRING_COMMAND_INTERVAL_SECS ?= 5
 RECURRING_COMMAND_BATCH_SIZE ?= 25
 
-.PHONY: help fmt check test run dev health metrics devices device-events schedules schedule cancel-schedule recurring-schedules recurring-schedule recurring-schedule-enable recurring-schedule-disable recurring-commands recurring-command recurring-command-enable recurring-command-disable turn-on turn-off open-cover close-cover stop-cover set-cover-position clean
+.PHONY: help fmt check test run dev health metrics api-meta event-stream devices device-events schedules schedule cancel-schedule recurring-schedules recurring-schedule recurring-schedule-enable recurring-schedule-disable recurring-commands recurring-command recurring-command-enable recurring-command-disable turn-on turn-off open-cover close-cover stop-cover set-cover-position clean
 
 help:
 	@printf "Available targets:\n"
@@ -34,6 +34,8 @@ help:
 	@printf "  make dev       Run fmt, check, test\n"
 	@printf "  make health    Call GET /health\n"
 	@printf "  make metrics   Call GET /metrics\n"
+	@printf "  make api-meta  Call GET /meta\n"
+	@printf "  make event-stream Watch live SSE changes\n"
 	@printf "  make devices   Call GET /devices\n"
 	@printf '  make device-events GET /devices/$${DEVICE}/events\n'
 	@printf '  make schedules GET /devices/$${DEVICE}/schedules\n'
@@ -68,6 +70,12 @@ run:
 	MQTT_HOST=$(MQTT_HOST) MQTT_PORT=$(MQTT_PORT) MQTT_CLIENT_ID=$(MQTT_CLIENT_ID) HTTP_ADDR=$(HTTP_ADDR) APP_TIME_ZONE=$(APP_TIME_ZONE) DB_HOST=$(DB_HOST) DB_PORT=$(DB_PORT) DB_USERNAME=$(DB_USERNAME) DB_PASS=$(DB_PASS) DB_NAME=$(DB_NAME) DEVICE_STALE_AFTER_SECS=$(DEVICE_STALE_AFTER_SECS) DEVICE_WATCHDOG_INTERVAL_SECS=$(DEVICE_WATCHDOG_INTERVAL_SECS) SCHEDULED_COMMAND_INTERVAL_SECS=$(SCHEDULED_COMMAND_INTERVAL_SECS) SCHEDULED_COMMAND_BATCH_SIZE=$(SCHEDULED_COMMAND_BATCH_SIZE) RECURRING_SCHEDULE_INTERVAL_SECS=$(RECURRING_SCHEDULE_INTERVAL_SECS) RECURRING_SCHEDULE_BATCH_SIZE=$(RECURRING_SCHEDULE_BATCH_SIZE) RECURRING_COMMAND_INTERVAL_SECS=$(RECURRING_COMMAND_INTERVAL_SECS) RECURRING_COMMAND_BATCH_SIZE=$(RECURRING_COMMAND_BATCH_SIZE) cargo run
 
 dev: fmt check test
+
+api-meta:
+	curl -sS http://$(HTTP_ADDR)/meta
+
+event-stream:
+	curl -N -sS http://$(HTTP_ADDR)/events/stream
 
 health:
 	curl -sS http://$(HTTP_ADDR)/health

@@ -5,6 +5,7 @@ pub enum DeviceEvent {
     DeviceDiscovered {
         device_id: DeviceId,
         name: String,
+        supported_commands: Option<Vec<super::recurring_command::DeviceCommand>>,
     },
     StateChanged {
         device_id: DeviceId,

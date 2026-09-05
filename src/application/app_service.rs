@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use super::changes::{ChangeKind, ChangePublisher, HubChange, NoopChangePublisher};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
@@ -21,6 +22,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct DeviceSummary {
     pub device: Device,
+    pub supported_commands: Option<Vec<DeviceCommand>>,
     pub latest_values: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -28,6 +30,11 @@ pub struct DeviceSummary {
 pub trait DeviceRepository: Send + Sync {
     async fn list(&self) -> Result<Vec<DeviceSummary>>;
     async fn upsert(&self, id: DeviceId, name: DeviceName) -> Result<()>;
+    async fn set_supported_commands(
+        &self,
+        id: DeviceId,
+        commands: Option<Vec<DeviceCommand>>,
+    ) -> Result<()>;
     async fn update_state(&self, id: DeviceId, state: DeviceState) -> Result<()>;
     async fn update_availability(
         &self,
@@ -104,6 +111,7 @@ pub trait DeviceCommandGateway: Send + Sync {
 }
 
 pub struct AppService {
+    changes: Arc<dyn ChangePublisher>,
     repository: Arc<dyn DeviceRepository>,
     events: Arc<dyn DeviceEventRepository>,
     scheduled_commands: Arc<dyn ScheduledCommandRepository>,
@@ -122,6 +130,7 @@ impl AppService {
         commands: Arc<dyn DeviceCommandGateway>,
     ) -> Self {
         Self {
+            changes: Arc::new(NoopChangePublisher),
             repository,
             events,
             scheduled_commands,
@@ -129,6 +138,18 @@ impl AppService {
             recurring_commands,
             commands,
         }
+    }
+
+    pub fn with_change_publisher(mut self, publisher: Arc<dyn ChangePublisher>) -> Self {
+        self.changes = publisher;
+        self
+    }
+
+    fn notify(&self, kind: ChangeKind, device_id: Option<&str>) {
+        self.changes.publish(HubChange {
+            kind,
+            device_id: device_id.map(str::to_owned),
+        });
     }
 
     pub async fn list_devices(&self) -> Result<Vec<DeviceSummary>> {
@@ -152,9 +173,12 @@ impl AppService {
         command: ScheduledCommand,
         run_at: String,
     ) -> Result<ScheduledCommandJob> {
-        self.scheduled_commands
+        let result = self
+            .scheduled_commands
             .create(DeviceId::new(device_id.to_string()), command, run_at)
-            .await
+            .await?;
+        self.notify(ChangeKind::SchedulesChanged, Some(device_id));
+        Ok(result)
     }
 
     pub async fn list_scheduled_commands(
@@ -167,7 +191,9 @@ impl AppService {
     }
 
     pub async fn cancel_scheduled_command(&self, id: i64) -> Result<()> {
-        self.scheduled_commands.cancel(id).await
+        self.scheduled_commands.cancel(id).await?;
+        self.notify(ChangeKind::SchedulesChanged, None);
+        Ok(())
     }
 
     pub async fn create_recurring_schedule(
@@ -176,9 +202,12 @@ impl AppService {
         start_time: String,
         end_time: String,
     ) -> Result<RecurringSchedule> {
-        self.recurring_schedules
+        let result = self
+            .recurring_schedules
             .create(DeviceId::new(device_id.to_string()), start_time, end_time)
-            .await
+            .await?;
+        self.notify(ChangeKind::SchedulesChanged, Some(device_id));
+        Ok(result)
     }
 
     pub async fn list_recurring_schedules(
@@ -191,7 +220,9 @@ impl AppService {
     }
 
     pub async fn set_recurring_schedule_enabled(&self, id: i64, enabled: bool) -> Result<()> {
-        self.recurring_schedules.set_enabled(id, enabled).await
+        self.recurring_schedules.set_enabled(id, enabled).await?;
+        self.notify(ChangeKind::SchedulesChanged, None);
+        Ok(())
     }
 
     pub async fn create_recurring_command(
@@ -201,14 +232,17 @@ impl AppService {
         payload: serde_json::Value,
         local_time: String,
     ) -> Result<RecurringCommand> {
-        self.recurring_commands
+        let result = self
+            .recurring_commands
             .create(
                 DeviceId::new(device_id.to_string()),
                 command,
                 payload,
                 local_time,
             )
-            .await
+            .await?;
+        self.notify(ChangeKind::SchedulesChanged, Some(device_id));
+        Ok(result)
     }
 
     pub async fn list_recurring_commands(&self, device_id: &str) -> Result<Vec<RecurringCommand>> {
@@ -218,44 +252,66 @@ impl AppService {
     }
 
     pub async fn set_recurring_command_enabled(&self, id: i64, enabled: bool) -> Result<()> {
-        self.recurring_commands.set_enabled(id, enabled).await
+        self.recurring_commands.set_enabled(id, enabled).await?;
+        self.notify(ChangeKind::SchedulesChanged, None);
+        Ok(())
     }
 
     pub fn turn_on(&self, id: &str) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.turn_on(&id)
+        self.commands.turn_on(&id)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub fn turn_off(&self, id: &str) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.turn_off(&id)
+        self.commands.turn_off(&id)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub fn open_cover(&self, id: &str) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.open_cover(&id)
+        self.commands.open_cover(&id)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub fn close_cover(&self, id: &str) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.close_cover(&id)
+        self.commands.close_cover(&id)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub fn stop_cover(&self, id: &str) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.stop_cover(&id)
+        self.commands.stop_cover(&id)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub fn set_cover_position(&self, id: &str, position: u8) -> Result<()> {
         let id = DeviceId::new(id.to_string());
-        self.commands.set_cover_position(&id, position)
+        self.commands.set_cover_position(&id, position)?;
+        self.notify(ChangeKind::CommandAccepted, Some(id.as_str()));
+        Ok(())
     }
 
     pub async fn handle_device_event(&self, event: DeviceEvent) -> Result<()> {
+        let changed_id = event.device_id().as_str().to_owned();
         match event {
-            DeviceEvent::DeviceDiscovered { device_id, name } => {
+            DeviceEvent::DeviceDiscovered {
+                device_id,
+                name,
+                supported_commands,
+            } => {
                 self.repository
-                    .upsert(device_id, DeviceName::new(name))
+                    .upsert(device_id.clone(), DeviceName::new(name))
+                    .await?;
+                self.repository
+                    .set_supported_commands(device_id, supported_commands)
                     .await?;
             }
             DeviceEvent::StateChanged { device_id, state } => {
@@ -276,6 +332,7 @@ impl AppService {
             }
         }
 
+        self.notify(ChangeKind::DevicesChanged, Some(&changed_id));
         Ok(())
     }
 
@@ -300,6 +357,7 @@ impl AppService {
                 }),
             );
             self.events.append(&event).await?;
+            self.notify(ChangeKind::DevicesChanged, Some(device_id.as_str()));
         }
 
         Ok(stale_devices.len())
@@ -313,6 +371,7 @@ impl AppService {
         let count = jobs.len();
 
         for job in jobs {
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
             let result = match job.command {
                 ScheduledCommand::TurnOn => self.commands.turn_on(&job.device_id),
                 ScheduledCommand::TurnOff => self.commands.turn_off(&job.device_id),
@@ -328,6 +387,7 @@ impl AppService {
                         .await?;
                 }
             }
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
         }
 
         Ok(count)
@@ -341,6 +401,7 @@ impl AppService {
         let count = jobs.len();
 
         for job in jobs {
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
             let result = match job.command {
                 RecurringScheduleCommand::TurnOn => self.commands.turn_on(&job.device_id),
                 RecurringScheduleCommand::TurnOff => self.commands.turn_off(&job.device_id),
@@ -358,6 +419,7 @@ impl AppService {
                         .await?;
                 }
             }
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
         }
 
         Ok(count)
@@ -371,6 +433,7 @@ impl AppService {
         let count = jobs.len();
 
         for job in jobs {
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
             let result = self.run_device_command(&job.device_id, job.command, &job.payload);
 
             match result {
@@ -383,6 +446,7 @@ impl AppService {
                         .await?;
                 }
             }
+            self.notify(ChangeKind::SchedulesChanged, Some(job.device_id.as_str()));
         }
 
         Ok(count)

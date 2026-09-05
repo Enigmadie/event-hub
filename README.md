@@ -566,3 +566,10 @@ Project layers:
 - `src/main.rs` - composition root.
 
 Domain and application must not depend on concrete MQTT, Zigbee2MQTT, Axum, Postgres, or environment configuration.
+
+## Shared HTTP API extensions
+
+See [HTTP client integration](docs/http-api.md) for device capabilities, `GET /meta`, structured
+JSON errors, `GET /events/stream` (SSE), and phone/reverse-proxy configuration. These contracts
+are shared by dashboards, Telegram bots, and other clients. Existing command endpoints remain
+available. The new capabilities column is added by the existing startup migration.

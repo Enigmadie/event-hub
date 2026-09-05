@@ -16,6 +16,8 @@ pub fn create_router(state: AppState, cors: CorsLayer) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/metrics", get(metrics::metrics))
+        .route("/meta", get(super::metadata::metadata))
+        .route("/events/stream", get(super::events::events))
         .route("/devices", get(devices::list_devices))
         .route("/devices/:id/events", get(devices::list_device_events))
         .route(
@@ -48,6 +50,7 @@ pub fn create_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/devices/:id/close", post(devices::close_cover))
         .route("/devices/:id/stop", post(devices::stop_cover))
         .route("/devices/:id/position", post(devices::set_cover_position))
+        .layer(middleware::from_fn(super::errors::normalize_errors))
         .layer(middleware::from_fn_with_state(
             metrics_state,
             metrics::track_http,

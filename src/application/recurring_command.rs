@@ -20,7 +20,8 @@ pub struct DueRecurringCommand {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceCommand {
     TurnOn,
     TurnOff,

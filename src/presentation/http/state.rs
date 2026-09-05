@@ -24,6 +24,8 @@ impl MqttHealth {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub time_zone: Arc<str>,
+    pub changes: crate::infrastructure::notifications::ChangeBroadcast,
     pub app_service: Arc<AppService>,
     pub mqtt_health: MqttHealth,
     pub metrics: Metrics,

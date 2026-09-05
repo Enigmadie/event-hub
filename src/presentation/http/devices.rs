@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::state::AppState;
+use super::{errors::ApiError, state::AppState};
 use crate::application::{
     app_service::DeviceSummary,
     device_event::DeviceEventLogEntry,
@@ -20,6 +20,7 @@ pub struct DeviceResponse {
     id: String,
     name: String,
     availability: String,
+    supported_commands: Option<Vec<DeviceCommand>>,
     values: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -119,6 +120,7 @@ impl From<DeviceSummary> for DeviceResponse {
             name: device.name().as_str().to_string(),
             availability: format!("{:?}", device.availability()),
             values: summary.latest_values,
+            supported_commands: summary.supported_commands,
         }
     }
 }
@@ -240,7 +242,12 @@ pub async fn create_schedule(
     Json(request): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
     let Some(command) = command_from_api(&request.command) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return ApiError::invalid(
+            "invalid_command",
+            "The command is not supported by this endpoint.",
+            "command",
+        )
+        .into_response();
     };
 
     match state
@@ -354,11 +361,21 @@ pub async fn create_recurring_command(
     Json(request): Json<CreateRecurringCommandRequest>,
 ) -> impl IntoResponse {
     let Some(command) = device_command_from_api(&request.command) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return ApiError::invalid(
+            "invalid_command",
+            "The command is not supported by this endpoint.",
+            "command",
+        )
+        .into_response();
     };
 
     if command == DeviceCommand::SetPosition && !valid_position_payload(&request.payload) {
-        return StatusCode::BAD_REQUEST.into_response();
+        return ApiError::invalid(
+            "invalid_position",
+            "Position must be an integer from 0 to 100.",
+            "payload.position",
+        )
+        .into_response();
     }
 
     match state
@@ -420,12 +437,17 @@ pub async fn set_cover_position(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<SetCoverPositionRequest>,
-) -> StatusCode {
+) -> axum::response::Response {
     if request.position > 100 {
-        return StatusCode::BAD_REQUEST;
+        return ApiError::invalid(
+            "invalid_position",
+            "Position must be an integer from 0 to 100.",
+            "position",
+        )
+        .into_response();
     }
 
-    command_status(state.app_service.set_cover_position(&id, request.position))
+    command_status(state.app_service.set_cover_position(&id, request.position)).into_response()
 }
 
 fn command_from_api(value: &str) -> Option<ScheduledCommand> {
